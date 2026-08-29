@@ -1,0 +1,16 @@
+# --- Core app -------------------------------------------------------------
+streamlit>=1.40
+python-dotenv>=1.0
+
+# --- Text triage / RAG (nanditajoshi13/MannMitra) --------------------------
+transformers>=4.40
+torch>=2.2
+chromadb>=0.5
+sentence-transformers>=2.6
+google-genai>=0.3
+
+# --- Speech / voice (Dhruv-jain-dev/Mannmitra_Speech-model) ---------------
+soundfile>=0.12
+librosa>=0.10          # mp3 decoding fallback + resampling (needs ffmpeg on PATH)
+scipy>=1.11
+numpy>=1.26
