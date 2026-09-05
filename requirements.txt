@@ -1,5 +1,9 @@
 # Web Framework & Interface
 streamlit>=1.40.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+SQLAlchemy>=2.0.0
+python-multipart>=0.0.9
 
 # LLM & API Integration
 google-genai>=0.3.0

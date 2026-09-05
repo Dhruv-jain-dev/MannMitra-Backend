@@ -174,15 +174,13 @@ class RiskAnalyzer:
     ]
 
     CRISIS_RESPONSE_TEXT = (
-        "I'm really glad you told me this, and I want you to know you don't have to "
-        "carry it alone right now. What you're feeling matters, and immediate support "
-        "is available.\n\n"
+        "I'm really glad you told me this. You don't have to carry it alone right now.\n\n"
         "**Please reach out right now:**\n"
         "- 📞 **Tele-MANAS**: 14416 (24/7, free, confidential)\n"
         "- 📞 **KIRAN Mental Health Helpline**: 1800-599-0019 (24/7, toll-free)\n\n"
-        "If you are in immediate physical danger, please contact local emergency "
-        "services or go to the nearest hospital. You matter, and there are people "
-        "trained to help you through this moment."
+        "- If you are in immediate physical danger, contact local emergency services "
+        "or go to the nearest hospital.\n"
+        "- You matter, and trained people can help you through this moment."
     )
 
     def __init__(self) -> None:
