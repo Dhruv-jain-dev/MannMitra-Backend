@@ -206,6 +206,26 @@ class RAGEngine:
                 self._collection.count(),
             )
 
+    def semantic_similarities(self, query: str, passages: List[str]) -> List[float]:
+        """Reuse the existing RAG embedding function for bounded private-memory ranking."""
+        if not passages:
+            return []
+        try:
+            import numpy as np
+
+            vectors = np.asarray(self._embed_fn([query, *passages]), dtype=float)
+            query_vector = vectors[0]
+            query_norm = np.linalg.norm(query_vector)
+            if not query_norm:
+                return [0.0] * len(passages)
+            return [
+                float(np.dot(query_vector, vector) / (query_norm * np.linalg.norm(vector))) if np.linalg.norm(vector) else 0.0
+                for vector in vectors[1:]
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Private-memory semantic ranking unavailable (%s).", exc)
+            return [0.0] * len(passages)
+
     # ------------------------------------------------------------------
     def _index_documents(self) -> None:
         ids: List[str] = []

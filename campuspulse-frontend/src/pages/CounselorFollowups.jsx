@@ -1,0 +1,14 @@
+import { CalendarDays, Check, Clock3, MoreHorizontal, Plus, RotateCcw } from "lucide-react";
+import PageTitle from "../components/PageTitle";
+const followups=[
+ {id:"CP-3127", title:"Check-in follow-up", date:"Today", time:"11:30 AM", type:"Wellbeing", priority:"Moderate"},
+ {id:"CP-2048", title:"Priority review", date:"Today", time:"3:00 PM", type:"Academic stress", priority:"Priority"},
+ {id:"CP-5086", title:"Support pathway review", date:"Sep 8", time:"10:00 AM", type:"Counselor", priority:"Priority"},
+ {id:"CP-4211", title:"Routine wellbeing check", date:"Sep 10", time:"2:30 PM", type:"Routine", priority:"Stable"}
+];
+export default function CounselorFollowups(){return <>
+<PageTitle eyebrow="FOLLOW-UPS DUE" title="Keep every support commitment visible." subtitle="A focused planner for scheduled check-ins, care-plan reviews and follow-up actions." action={<button className="btn btn-primary"><Plus size={14}/> Schedule follow-up</button>}/>
+<div className="role-kpi-grid"><Kpi label="Due today" value="3" detail="Requires action" tone="warning"/><Kpi label="This week" value="9" detail="Scheduled follow-ups"/><Kpi label="Completed" value="21" detail="Last 7 days" tone="success"/><Kpi label="Overdue" value="1" detail="Needs review" tone="danger"/></div>
+<div className="followup-layout"><section className="card workspace-card"><div className="calendar-strip"><div><span className="eyebrow">TODAY</span><b>September 5, 2026</b></div><button className="btn btn-soft btn-small"><CalendarDays size={13}/> Calendar</button></div><div className="followup-list">{followups.map(f=><div className="followup-row" key={f.id}><div className={`followup-time ${f.priority.toLowerCase()}`}><b>{f.time}</b><small>{f.date}</small></div><div className="followup-info"><b>{f.title}</b><span>{f.id} · {f.type}</span></div><span className={`status-chip ${f.priority==='Priority'?'danger':f.priority==='Moderate'?'warning':'success'}`}>{f.priority}</span><button className="icon-btn"><MoreHorizontal size={15}/></button></div>)}</div></section><aside className="followup-side"><section className="card workspace-card"><span className="eyebrow">QUICK ACTION</span><h3>Reschedule a follow-up</h3><p className="panel-subtext">Move a commitment while keeping the original context and audit trail.</p><button className="btn btn-soft"><RotateCcw size={14}/> Reschedule</button></section><section className="card workspace-card"><span className="eyebrow">COMPLETION</span><h3>Follow-up hygiene</h3><div className="completion-meter"><strong>91%</strong><span>on-time completion</span><i><em style={{width:'91%'}}/></i></div><p className="small-muted">Target: keep planned support actions reviewed on time.</p></section></aside></div>
+</>}
+function Kpi({label,value,detail,tone=''}){return <div className={`card role-kpi ${tone}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>}

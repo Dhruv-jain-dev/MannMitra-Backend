@@ -1,0 +1,3 @@
+import { useState } from "react";
+const palette=["#55c9a7","#8b83f7","#d9b14d","#5aa8e8"];
+export default function ColorCalm(){const [sequence,setSequence]=useState([0,2,1]);const [step,setStep]=useState(0);const tap=i=>{if(i===sequence[step])setStep(s=>s+1);else setStep(0)};return <div className="game-content"><p>Follow the gentle color order.</p><div className="color-palette">{palette.map((c,i)=><button key={i} style={{background:c}} onClick={()=>tap(i)} aria-label={`Color ${i+1}`}/>)}</div><strong>{step>=sequence.length?"Nice. Sequence complete.":`Step ${step+1} of ${sequence.length}`}</strong></div>}

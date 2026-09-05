@@ -1,0 +1,3 @@
+import { useState } from "react";
+const cards=["🌿","☀️","🌙","💧","🌿","☀️","🌙","💧"];
+export default function MindMatch(){const [open,setOpen]=useState([]);const [matched,setMatched]=useState([]);const click=i=>{if(open.length===2||open.includes(i)||matched.includes(i))return;const next=[...open,i];setOpen(next);if(next.length===2&&cards[next[0]]===cards[next[1]])setTimeout(()=>{setMatched(m=>[...m,...next]);setOpen([])},350);else if(next.length===2)setTimeout(()=>setOpen([]),600)};return <div className="game-content"><div className="memory-board">{cards.map((c,i)=><button key={i} className="memory-card" onClick={()=>click(i)}>{open.includes(i)||matched.includes(i)?c:"?"}</button>)}</div><strong>{matched.length/2}/4 pairs matched</strong></div>}

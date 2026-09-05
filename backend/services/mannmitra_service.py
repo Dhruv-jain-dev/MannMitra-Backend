@@ -94,6 +94,14 @@ SYSTEM_PROMPT = (
     "free of clinical jargon. Talk in non-repeating semi-casual patterns."
 )
 
+_EXPLICIT_MEMORY_PATTERNS = (
+    r"\b(what|do|did|can)\b.*\b(i|we)\b.*\b(tell|say|discuss|mention|talk)\b.*\b(earlier|before|previous|last|yesterday)\b",
+    r"\b(do you )?(remember|recall)\b.*\b(earlier|before|previous|last|yesterday|chat)\b",
+    r"\b(do you )?(remember|recall)\b.*\b(i|we)\b.*\b(tell|told|say|mention|discuss|talk)\b",
+    r"\bwhat did we\b.*\b(discuss|talk|say|mention)\b",
+    r"\bwhat did (i|we)\b.*\b(earlier|before|previous|last|yesterday)\b",
+)
+
 
 try:
     import predict_speech_emotion
@@ -166,14 +174,64 @@ class MannMitraService:
     def hash_audio(data: bytes) -> str:
         return hashlib.sha256(data).hexdigest()
 
-    def generate_reply(self, user_text: str, chat_history: List[dict], rag_context: RAGContext) -> str:
+    @staticmethod
+    def is_explicit_memory_request(text: str) -> bool:
+        import re
+
+        normalized = " ".join(text.casefold().split())
+        return any(re.search(pattern, normalized) for pattern in _EXPLICIT_MEMORY_PATTERNS)
+
+    @staticmethod
+    def _memory_terms(text: str) -> set[str]:
+        import re
+
+        ignored = {
+            "about", "again", "ask", "before", "can", "could", "did", "discuss", "earlier",
+            "from", "have", "help", "here", "how", "into", "just", "last", "me", "need",
+            "previous", "recall", "remember", "say", "should", "talk", "tell", "that", "this",
+            "told", "want", "what", "with", "would", "yesterday", "you", "your",
+        }
+        terms = set(re.findall(r"[a-z0-9]+", text.casefold()))
+        return {term[:-1] if len(term) > 4 and term.endswith("s") else term for term in terms if len(term) > 2 and term not in ignored}
+
+    def select_previous_memory(self, query: str, candidates: List[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Rank bounded user-owned candidates, prioritizing explicit recall requests."""
+        if not candidates:
+            return []
+        query_terms = self._memory_terms(query)
+        explicit = self.is_explicit_memory_request(query)
+        ranked: list[tuple[float, Any, dict[str, Any]]] = []
+        for candidate in candidates:
+            lexical_overlap = len(query_terms & self._memory_terms(candidate["content"]))
+            if lexical_overlap:
+                ranked.append((float(lexical_overlap), candidate["created_at"], candidate))
+        if ranked:
+            ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            return [item[2] for item in ranked[:2]]
+        if explicit:
+            # An explicit history question without a topic refers to the most recent prior chat.
+            return [candidates[0]]
+        similarities = self.rag_engine.semantic_similarities(query, [item["content"] for item in candidates[:24]])
+        semantic = [(score, candidates[index]) for index, score in enumerate(similarities) if score >= 0.42]
+        semantic.sort(key=lambda item: (item[0], item[1]["created_at"]), reverse=True)
+        return [item[1] for item in semantic[:1]]
+
+    def generate_reply(
+        self,
+        user_text: str,
+        chat_history: List[dict],
+        rag_context: RAGContext,
+        previous_memory: Optional[List[dict]] = None,
+        memory_lookup_attempted: bool = False,
+    ) -> str:
         """The existing single-call Gemini response path for eligible turns."""
         if not self.gemini_available:
-            return (
+            fallback = (
                 "I'm really glad you shared that.\n\n"
                 "- Thanks for opening up - you don't have to hold it all by yourself.\n"
                 "- Want to tell me a little more about what's been going on?"
             )
+            return ("- I couldn't find matching information in your previous conversations.\n\n" + fallback) if memory_lookup_attempted else fallback
 
         context_note = ""
         if rag_context.is_used and rag_context.retrieved_documents:
@@ -188,11 +246,19 @@ class MannMitraService:
             role = "Student" if turn["role"] == "user" else "MannMitra"
             convo_lines.append(f"{role}: {turn['content']}")
         convo_text = "\n".join(convo_lines)
+        memory_note = ""
+        if previous_memory:
+            memory_lines = [f"Student (earlier chat): {turn['content']}" for turn in previous_memory]
+            memory_note = (
+                "\n\nRelevant previous-chat memory (separate from support documents; "
+                "use only when it helps answer the student's message):\n"
+                + "\n".join(memory_lines)
+            )
 
         prompt = (
             f"Recent conversation:\n{convo_text}\n\n"
             f"Student's latest message: {user_text}"
-            f"{context_note}\n\n"
+            f"{memory_note}{context_note}\n\n"
             "Respond as MannMitra using the requested concise, primarily bullet-point format:"
         )
 
@@ -202,7 +268,7 @@ class MannMitraService:
                 config = _genai_types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     temperature=0.6,
-                    max_output_tokens=300,
+                    max_output_tokens=180,
                     safety_settings=_SAFETY_SETTINGS if _SAFETY_SETTINGS else None,
                 )
 
@@ -212,7 +278,10 @@ class MannMitraService:
                 config=config,
             )
             text = (response.text or "").strip()
-            return text if text else "I'm here with you - can you tell me a little more?"
+            reply = text if text else "I'm here with you - can you tell me a little more?"
+            if memory_lookup_attempted and not previous_memory:
+                return "- I couldn't find matching information in your previous conversations.\n\n" + reply
+            return reply
         except Exception as exc:  # noqa: BLE001
             logger.error("Gemini generation failed: %s", exc)
             return (
@@ -302,6 +371,8 @@ class MannMitraService:
         chat_history: Optional[List[dict]] = None,
         history_scores: Optional[List[float]] = None,
         voice_diagnostics: Optional[dict[str, Any]] = None,
+        previous_memory: Optional[List[dict]] = None,
+        memory_lookup_attempted: bool = False,
     ) -> TurnResult:
         """Run the current text triage/RAG/Gemini sequence without UI state."""
         history = chat_history or []
@@ -320,7 +391,7 @@ class MannMitraService:
             rag_context = self.rag_engine.retrieve(user_text, assessment.score)
             rag_ms = (time.perf_counter() - rag_started) * 1000
             gemini_started = time.perf_counter()
-            reply = self.generate_reply(user_text, history, rag_context)
+            reply = self.generate_reply(user_text, history, rag_context, previous_memory, memory_lookup_attempted)
             gemini_ms = (time.perf_counter() - gemini_started) * 1000
 
         return TurnResult(

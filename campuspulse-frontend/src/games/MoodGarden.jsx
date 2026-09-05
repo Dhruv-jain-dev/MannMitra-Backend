@@ -1,0 +1,3 @@
+import { useState } from "react";
+const prompts=["One thing I handled today","A person I can reach out to","A small thing I enjoyed","Something I want to give myself permission to do"];
+export default function MoodGarden(){const [count,setCount]=useState(0);return <div className="game-content"><div className="garden-visual">{Array.from({length:count},(_,i)=><span key={i}>🌱</span>)}{count===0&&<span className="garden-hint">Your garden is waiting 🌱</span>}</div><p>{prompts[Math.min(count,prompts.length-1)]}</p><button className="btn btn-primary" onClick={()=>setCount(c=>Math.min(c+1,prompts.length))}>{count<prompts.length?"Add a gentle thought":"Garden complete"}</button></div>}

@@ -63,7 +63,7 @@ class AuthService:
             raise self._unauthorized("Invalid or expired access token") from exc
 
     def create_access_token(self, subject: str, expires_in_seconds: int = 3600) -> str:
-        """Build a signed test/development token; do not expose this through an API route."""
+        """Build a signed token for tests and the development-only token route."""
         if not self._secret:
             raise RuntimeError("Authentication is not configured")
         header = _base64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())

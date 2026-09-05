@@ -1,4 +1,4 @@
-"""SQLite database setup for Phase 2 development persistence."""
+"""SQLAlchemy database setup for local SQLite and Supabase PostgreSQL persistence."""
 
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ class Database:
     """Owns one engine and creates short-lived request sessions."""
 
     def __init__(self, database_url: str) -> None:
+        if database_url.startswith("postgresql://"):
+            database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
         connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-        self.engine = create_engine(database_url, connect_args=connect_args)
+        self.engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
         self.session_factory = sessionmaker(bind=self.engine, autoflush=False, expire_on_commit=False)
 
     def create_all(self) -> None:
@@ -28,5 +30,5 @@ class Database:
         return self.session_factory()
 
     def dispose(self) -> None:
-        """Release pooled SQLite connections during application shutdown."""
+        """Release pooled database connections during application shutdown."""
         self.engine.dispose()

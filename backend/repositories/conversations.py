@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 from typing import Any, Literal
 
 from sqlalchemy import desc, func, select, update
@@ -55,8 +56,78 @@ class ConversationRepository:
             session.commit()
             return conversation
 
+    @staticmethod
+    def _is_generic_title(title: str | None) -> bool:
+        return not title or title.strip().casefold() in {
+            "mannmitra conversation", "untitled conversation", "wellbeing check-in",
+            "exam stress & planning", "sleep problems", "relationship concerns",
+            "today's anxiety", "feeling overwhelmed", "college work stress", "family concerns",
+        }
+
+    @staticmethod
+    def _conversation_title(text: str) -> str | None:
+        """Create a concise, non-sensitive local title without another model request."""
+        words = re.findall(r"[a-zA-Z0-9]+", text.casefold())
+        stop_words = {"a", "about", "am", "an", "and", "are", "at", "be", "because", "can", "could", "do", "for", "from", "had", "have", "how", "i", "im", "in", "is", "it", "me", "my", "next", "of", "on", "really", "should", "that", "the", "to", "want", "week", "with", "you"}
+        terms = [word for word in words if len(word) > 1 and word not in stop_words]
+        term_set = set(terms)
+        if len(terms) < 2:
+            return None
+        if term_set & {"argument", "disagreement", "conflict"} and term_set & {"roommate", "friend", "partner", "family"}:
+            subject = next(word for word in terms if word in {"roommate", "friend", "partner", "family"})
+            return f"{subject.title()} Conflict"
+        if term_set & {"talk", "speak", "approach"} and term_set & {"professor", "teacher", "lecturer", "advisor"}:
+            person = next(word for word in terms if word in {"professor", "teacher", "lecturer", "advisor"})
+            return f"Talking to {person.title()}"
+        if "sleep" in term_set and term_set & {"improve", "improving", "schedule", "better"}:
+            return "Improving Sleep Schedule"
+        if term_set & {"exam", "exams", "test", "tests"}:
+            subject = next((word for word in terms if word in {"maths", "math", "mathematics", "physics", "chemistry", "biology"}), None)
+            stress = next((word for word in terms if word in {"stress", "stressed", "worried", "anxious", "anxiety"}), None)
+            subject_label = {"math": "Maths", "mathematics": "Maths"}.get(subject or "", subject.title() if subject else "")
+            pieces = ([subject_label] if subject_label else []) + ["Exam"] + (["Stress"] if stress else [])
+            return " ".join(pieces)
+        title_terms = terms[:4]
+        return " ".join(word.title() for word in title_terms)
+
+    def _backfill_generic_titles(self, session: Session, user_id: str) -> None:
+        conversations = list(
+            session.scalars(select(Conversation).where(Conversation.user_id == user_id))
+        )
+        changed = False
+        for conversation in conversations:
+            if not self._is_generic_title(conversation.title):
+                continue
+            first_message = session.scalar(
+                select(Message.content)
+                .where(Message.conversation_id == conversation.id, Message.role == "user", Message.content != "")
+                .order_by(Message.position)
+                .limit(1)
+            )
+            title = self._conversation_title(first_message) if first_message else None
+            if title:
+                conversation.title = title
+                changed = True
+        if changed:
+            session.commit()
+
+    def set_title_from_message(self, user_id: str, conversation_id: str, text: str) -> None:
+        """Title a new or legacy generic conversation once from its first useful turn."""
+        with self._session() as session:
+            conversation = session.scalar(
+                select(Conversation).where(
+                    Conversation.id == conversation_id,
+                    Conversation.user_id == user_id,
+                )
+            )
+            title = self._conversation_title(text)
+            if conversation is not None and title and self._is_generic_title(conversation.title):
+                conversation.title = title
+                session.commit()
+
     def list_conversations(self, user_id: str) -> list[Conversation]:
         with self._session() as session:
+            self._backfill_generic_titles(session, user_id)
             return list(
                 session.scalars(
                     select(Conversation)
@@ -100,7 +171,7 @@ class ConversationRepository:
                 select(Conversation).where(
                     Conversation.id == conversation_id,
                     Conversation.user_id == user_id,
-                )
+                ).with_for_update()
             )
             if conversation is None:
                 raise LookupError("Conversation not found")
@@ -156,7 +227,7 @@ class ConversationRepository:
                 select(Conversation).where(
                     Conversation.id == conversation_id,
                     Conversation.user_id == user_id,
-                )
+                ).with_for_update()
             )
             if conversation is None:
                 raise LookupError("Conversation not found")
@@ -220,6 +291,76 @@ class ConversationRepository:
             )
             messages.reverse()
             return [{"role": message.role, "content": message.content} for message in messages]
+
+    @staticmethod
+    def _memory_terms(text: str) -> set[str]:
+        ignored = {"about", "again", "earlier", "from", "have", "here", "into", "just", "that", "this", "told", "what", "with", "would", "your"}
+        terms = set(re.findall(r"[a-z0-9]+", text.casefold()))
+        return {term[:-1] if len(term) > 4 and term.endswith("s") else term for term in terms if len(term) > 2 and term not in ignored}
+
+    def previous_memory_candidates(
+        self,
+        user_id: str,
+        conversation_id: str,
+        limit: int = 40,
+    ) -> list[dict[str, Any]]:
+        """Fetch recent, user-owned prior messages for service-side relevance ranking."""
+        with self._session() as session:
+            candidates = list(
+                session.execute(
+                    select(Message.conversation_id, Message.position, Message.content, Message.created_at)
+                    .join(Conversation, Message.conversation_id == Conversation.id)
+                    .where(
+                        Conversation.user_id == user_id,
+                        Conversation.id != conversation_id,
+                        Message.role == "user",
+                        Message.content != "",
+                    )
+                    .order_by(desc(Message.created_at))
+                    .limit(limit)
+                )
+            )
+        return [
+            {"conversation_id": item.conversation_id, "position": item.position, "content": item.content, "created_at": item.created_at}
+            for item in candidates
+        ]
+
+    def surrounding_previous_context(
+        self,
+        user_id: str,
+        anchors: list[dict[str, Any]],
+        radius: int = 2,
+        max_characters: int = 1100,
+    ) -> list[dict[str, str]]:
+        """Return bounded turns around selected prior messages, still scoped to one user."""
+        selected: list[dict[str, str]] = []
+        used_characters = 0
+        seen: set[tuple[str, int]] = set()
+        with self._session() as session:
+            for anchor in anchors:
+                messages = list(
+                    session.execute(
+                        select(Message.position, Message.role, Message.content)
+                        .join(Conversation, Message.conversation_id == Conversation.id)
+                        .where(
+                            Conversation.user_id == user_id,
+                            Conversation.id == anchor["conversation_id"],
+                            Message.position.between(anchor["position"] - radius, anchor["position"] + radius),
+                        )
+                        .order_by(Message.position)
+                    )
+                )
+                for message in messages:
+                    key = (anchor["conversation_id"], message.position)
+                    clipped = message.content[: max_characters - used_characters].strip()
+                    if key in seen or not clipped:
+                        continue
+                    seen.add(key)
+                    selected.append({"role": message.role, "content": clipped})
+                    used_characters += len(clipped)
+                    if used_characters >= max_characters:
+                        return selected
+        return selected
 
     def conversation_analytics(self, user_id: str, conversation_id: str) -> dict[str, Any] | None:
         """Expose only already-persisted Streamlit-equivalent analytics values."""

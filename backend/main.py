@@ -9,6 +9,7 @@ import time
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -27,6 +28,15 @@ _AUDIO_SUFFIXES = {".wav", ".mp3"}
 
 class CreateConversationRequest(BaseModel):
     title: str | None = Field(default=None, max_length=200)
+
+
+class DevelopmentTokenRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
 
 
 class ConversationResponse(BaseModel):
@@ -104,6 +114,14 @@ def create_app(
             database.dispose()
 
     api = FastAPI(title=resolved_settings.app_name, lifespan=lifespan)
+    if resolved_settings.environment.lower() in {"development", "dev", "test"}:
+        api.add_middleware(
+            CORSMiddleware,
+            allow_origins=["http://localhost:5317"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     @api.middleware("http")
     async def log_text_turn_latency(request: Request, call_next):
@@ -141,6 +159,13 @@ def create_app(
     def health() -> dict[str, str]:
         """Health-only endpoint: no generation or ML inference occurs here."""
         return {"status": "ok", "service": "mannmitra-backend"}
+
+    @api.post("/api/auth/dev-token", response_model=TokenResponse)
+    def create_development_token(payload: DevelopmentTokenRequest) -> dict[str, str]:
+        """Issue a local-only JWT until a production identity provider is connected."""
+        if resolved_settings.environment.lower() not in {"development", "dev", "test"}:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        return {"access_token": auth_service.create_access_token(payload.subject), "token_type": "bearer"}
 
     @api.post("/api/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
     def create_conversation(
@@ -217,14 +242,23 @@ def create_app(
             context_started = time.perf_counter()
             chat_history = repo.recent_context(payload.conversation_id)
             history_scores = repo.risk_history(payload.conversation_id)
+            memory_lookup_attempted = service.is_explicit_memory_request(payload.text)
+            memory_anchors = service.select_previous_memory(
+                payload.text,
+                repo.previous_memory_candidates(user.id, payload.conversation_id),
+            )
+            previous_memory = repo.surrounding_previous_context(user.id, memory_anchors)
             context_risk_history_ms = (time.perf_counter() - context_started) * 1000
             result = service.process_turn(
                 payload.text,
                 chat_history=chat_history,
                 history_scores=history_scores,
+                previous_memory=previous_memory,
+                memory_lookup_attempted=memory_lookup_attempted,
             )
             persistence_started = time.perf_counter()
             repo.complete_turn(claim.user_message.id, result)
+            repo.set_title_from_message(user.id, payload.conversation_id, payload.text)
         except Exception as exc:
             repo.mark_turn_failed(claim.user_message.id)
             logger.error("Text turn processing failed: %s", exc)
@@ -293,13 +327,21 @@ def create_app(
                 repo.mark_turn_failed(claim.user_message.id)
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Audio could not be transcribed")
             repo.update_user_message_content(claim.user_message.id, transcript)
+            memory_lookup_attempted = service.is_explicit_memory_request(transcript)
+            memory_anchors = service.select_previous_memory(
+                transcript,
+                repo.previous_memory_candidates(user.id, conversation_id),
+            )
             result = service.process_turn(
                 transcript,
                 chat_history=repo.recent_context(conversation_id),
                 history_scores=repo.risk_history(conversation_id),
                 voice_diagnostics=diagnostics,
+                previous_memory=repo.surrounding_previous_context(user.id, memory_anchors),
+                memory_lookup_attempted=memory_lookup_attempted,
             )
             repo.complete_turn(claim.user_message.id, result)
+            repo.set_title_from_message(user.id, conversation_id, transcript)
         except HTTPException:
             raise
         except Exception as exc:

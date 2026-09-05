@@ -1,0 +1,2 @@
+import { useState } from "react";
+export default function FocusSprint() { const [target,setTarget]=useState(5); const [score,setScore]=useState(0); const hit=i=>{if(i===target){setScore(s=>s+1);setTarget(Math.floor(Math.random()*9));}}; return <div className="game-content"><p>Tap the different symbol.</p><div className="focus-board">{Array.from({length:9},(_,i)=><button key={i} onClick={()=>hit(i)}>{i===target?"◉":"○"}</button>)}</div><strong>Focus score: {score}</strong></div>; }

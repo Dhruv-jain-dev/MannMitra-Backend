@@ -1,0 +1,3 @@
+import { useEffect, useState } from "react";
+const steps=["Settle","Breathe","Notice","Finish"];
+export default function MiniMeditation(){const [step,setStep]=useState(0);useEffect(()=>{const id=setInterval(()=>setStep(s=>Math.min(s+1,3)),3000);return()=>clearInterval(id)},[]);return <div className="game-content meditation-game"><div className="meditation-orb"><span>{steps[step]}</span></div><p>{step===0?"Let your shoulders soften.":step===1?"Take a slow, comfortable breath.":step===2?"Notice one sound, one sensation and one thought.":"Take this calm moment with you."}</p><div className="meditation-steps">{steps.map((s,i)=><span className={i===step?"active":""} key={s}>{i+1}. {s}</span>)}</div></div>}
