@@ -1,11 +1,25 @@
+# Environment variables / secrets
 .env
 .env.*
-chroma_db/
-__pycache__/
-*.pyc
+!.env.example
+
+# Python
 venv/
 .venv/
+__pycache__/
 *.pyc
-*.db
+*.pyo
+*.pyd
+
+# Node
 node_modules/
 dist/
+build/
+
+# IDE
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+chroma_db/

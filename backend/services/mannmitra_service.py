@@ -81,18 +81,24 @@ SYSTEM_PROMPT = (
     "You are MannMitra, a warm, empathetic peer listener for Indian college "
     "students. You are NOT a therapist and never diagnose. Use a caring, "
     "non-clinical, conversational tone - like a supportive friend, not a "
-    "textbook. Format each reply primarily as concise Markdown bullet points, "
-    "with a brief supportive lead-in when it feels natural. Keep each point "
-    "clear and complete rather than fragmenting every sentence. Avoid long "
-    "paragraph blocks. Use a numbered list when giving sequential steps, and "
-    "use headings only when they genuinely improve clarity. Validate the "
-    "student's feelings before offering any gentle suggestion. If helpful "
-    "context about a coping technique or campus resource is provided to "
-    "you, weave it naturally into your own words as a friendly suggestion "
-    "- never quote titles, filenames, or headers verbatim, and never say "
-    "things like '[Source: ...]'. Keep responses grounded, human, and "
-    "free of clinical jargon. Talk in non-repeating semi-casual patterns."
+    "textbook. Respond naturally to the student's message and let the "
+    "conversation guide the style and length of your response. "
+
+    "Use normal conversational paragraphs by default. When useful, "
+    "you may use concise Markdown bullet points for clear suggestions or coping steps but within 20-30 words max, "
+    "but do not force bullet points or a fixed structure on every response. "
+    "Simple conversation, emotional sharing, reassurance, and casual updates "
+    "should remain natural prose. Use numbered lists only when giving "
+    "sequential steps, and use headings only when they genuinely improve "
+    "clarity. "
+
+    "If helpful context about a coping technique or campus resource is "
+    "provided to you, weave it naturally into your own words as a friendly "
+    "suggestion - never quote titles, filenames, or headers verbatim, and "
+    "never say things like '[Source: ...]'. Keep responses grounded, human, "
+    "and free of clinical jargon. Talk in non-repeating semi-casual patterns."
 )
+
 
 _EXPLICIT_MEMORY_PATTERNS = (
     r"\b(what|do|did|can)\b.*\b(i|we)\b.*\b(tell|say|discuss|mention|talk)\b.*\b(earlier|before|previous|last|yesterday)\b",
@@ -237,12 +243,12 @@ class MannMitraService:
         if rag_context.is_used and rag_context.retrieved_documents:
             joined = "\n\n".join(rag_context.retrieved_documents[:2])
             context_note = (
-                "\n\nHelpful background you may draw on (do not quote directly, "
-                f"paraphrase naturally):\n{joined}"
+                # "\n\nHelpful background you may draw on (do not quote directly, "
+                # f"paraphrase naturally):\n{joined}"
             )
 
         convo_lines = []
-        for turn in chat_history[-6:]:
+        for turn in chat_history[0:]:
             role = "Student" if turn["role"] == "user" else "MannMitra"
             convo_lines.append(f"{role}: {turn['content']}")
         convo_text = "\n".join(convo_lines)
@@ -259,7 +265,7 @@ class MannMitraService:
             f"Recent conversation:\n{convo_text}\n\n"
             f"Student's latest message: {user_text}"
             f"{memory_note}{context_note}\n\n"
-            "Respond as MannMitra using the requested concise, primarily bullet-point format:"
+            "Respond naturally as MannMitra:"
         )
 
         try:
@@ -267,7 +273,7 @@ class MannMitraService:
             if _genai_types is not None:
                 config = _genai_types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
-                    temperature=0.6,
+                    temperature=0.7,
                     max_output_tokens=180,
                     safety_settings=_SAFETY_SETTINGS if _SAFETY_SETTINGS else None,
                 )
@@ -280,14 +286,14 @@ class MannMitraService:
             text = (response.text or "").strip()
             reply = text if text else "I'm here with you - can you tell me a little more?"
             if memory_lookup_attempted and not previous_memory:
-                return "- I couldn't find matching information in your previous conversations.\n\n" + reply
+                return "I couldn't find matching information in your previous conversations.\n\n" + reply
             return reply
         except Exception as exc:  # noqa: BLE001
             logger.error("Gemini generation failed: %s", exc)
             return (
                 "I'm here and listening.\n\n"
-                "- I'm having a little trouble finding the right words right now.\n"
-                "- Can you tell me more about how you're feeling?"
+                "I'm having a little trouble finding the right words right now.\n"
+                "Can you tell me more about how you're feeling?"
             )
 
     def process_voice_input(self, audio_bytes: bytes, suffix: str = ".wav") -> dict[str, Any]:
