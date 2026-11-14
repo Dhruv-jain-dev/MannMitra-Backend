@@ -296,17 +296,11 @@ class Phase2PersistenceTests(unittest.TestCase):
         self.assertEqual(self.service.previous_memories[-1], [])
         self.assertTrue(self.service.memory_lookups[-1])
 
-    def test_no_memory_reply_says_the_prior_information_was_not_found(self) -> None:
+    def test_missing_gemini_configuration_does_not_fabricate_a_reply(self) -> None:
         service = object.__new__(MannMitraService)
         service.gemini_available = False
-        reply = service.generate_reply(
-            "What did we discuss yesterday?",
-            [],
-            RAGContext(is_used=False),
-            previous_memory=[],
-            memory_lookup_attempted=True,
-        )
-        self.assertIn("couldn't find matching information in your previous conversations", reply)
+        with self.assertRaises(Exception):
+            service.generate_reply("What did we discuss yesterday?", [], RAGContext(is_used=False), previous_memory=[], memory_lookup_attempted=True)
 
     def test_representative_explicit_recall_phrasings_are_detected(self) -> None:
         prompts = (

@@ -38,6 +38,19 @@ def _harmonize_gemini_key() -> str:
 
 GEMINI_API_KEY = _harmonize_gemini_key()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+try:
+    GEMINI_TIMEOUT_MS = max(5_000, min(int(os.environ.get("GEMINI_TIMEOUT_MS", "75000")), 120_000))
+except ValueError:
+    GEMINI_TIMEOUT_MS = 75_000
+
+
+class GeminiGenerationError(RuntimeError):
+    """Safe, categorized Gemini failure without prompt or credential data."""
+
+    def __init__(self, category: str, public_detail: str) -> None:
+        super().__init__(public_detail)
+        self.category = category
+        self.public_detail = public_detail
 
 _GENAI_AVAILABLE = False
 _genai_client = None
@@ -48,13 +61,16 @@ try:
     from google.genai import types as _google_genai_types
 
     if GEMINI_API_KEY:
-        _genai_client = _google_genai.Client(api_key=GEMINI_API_KEY)
         _genai_types = _google_genai_types
+        _genai_client = _google_genai.Client(
+            api_key=GEMINI_API_KEY,
+            http_options=_genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+        )
         _GENAI_AVAILABLE = True
     else:
         logger.warning("No GEMINI_API_KEY / GOOGLE_API_KEY found in environment.")
 except Exception as exc:  # noqa: BLE001
-    logger.warning("google-genai unavailable (%s). LLM responses will use a static fallback.", exc)
+    logger.warning("google-genai unavailable (%s). AI generation will be unavailable.", type(exc).__name__)
 
 _SAFETY_SETTINGS = None
 if _genai_types is not None:
@@ -102,27 +118,44 @@ SYSTEM_PROMPT = (
 
 _EXPLICIT_MEMORY_PATTERNS = (
     r"\b(what|do|did|can)\b.*\b(i|we)\b.*\b(tell|say|discuss|mention|talk)\b.*\b(earlier|before|previous|last|yesterday)\b",
+    r"\bwhat did\b.*\b(tell|say|discuss|mention|talk)\b.*\b(previously|earlier|before|previous|last|yesterday)\b",
     r"\b(do you )?(remember|recall)\b.*\b(earlier|before|previous|last|yesterday|chat)\b",
     r"\b(do you )?(remember|recall)\b.*\b(i|we)\b.*\b(tell|told|say|mention|discuss|talk)\b",
     r"\bwhat did we\b.*\b(discuss|talk|say|mention)\b",
     r"\bwhat did (i|we)\b.*\b(earlier|before|previous|last|yesterday)\b",
+    r"\b(can you|could you)\b.*\b(remind|recap|summarize)\b.*\b(what|we|our)\b",
 )
 
 
-try:
-    import predict_speech_emotion
-    import speech_analysis
-    import speech_to_text
-    import stress_interpretation
+predict_speech_emotion = None
+speech_analysis = None
+speech_to_text = None
+stress_interpretation = None
+_SPEECH_ENGINE_AVAILABLE = False
+_SPEECH_LOAD_ATTEMPTED = False
 
-    _SPEECH_ENGINE_AVAILABLE = True
-except Exception as exc:  # noqa: BLE001
-    logger.warning("Speech engine unavailable (%s); voice input will be disabled.", exc)
-    predict_speech_emotion = None
-    speech_analysis = None
-    speech_to_text = None
-    stress_interpretation = None
-    _SPEECH_ENGINE_AVAILABLE = False
+
+def _ensure_speech_engine() -> bool:
+    """Load voice dependencies only when a voice turn is requested."""
+    global _SPEECH_LOAD_ATTEMPTED, _SPEECH_ENGINE_AVAILABLE
+    global predict_speech_emotion, speech_analysis, speech_to_text, stress_interpretation
+    if _SPEECH_LOAD_ATTEMPTED:
+        return _SPEECH_ENGINE_AVAILABLE
+    _SPEECH_LOAD_ATTEMPTED = True
+    try:
+        import predict_speech_emotion as acoustic_module
+        import speech_analysis as speech_analysis_module
+        import speech_to_text as speech_to_text_module
+        import stress_interpretation as stress_module
+        predict_speech_emotion = acoustic_module
+        speech_analysis = speech_analysis_module
+        speech_to_text = speech_to_text_module
+        stress_interpretation = stress_module
+        _SPEECH_ENGINE_AVAILABLE = True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Speech engine unavailable (%s); voice input will be disabled.", exc)
+        _SPEECH_ENGINE_AVAILABLE = False
+    return _SPEECH_ENGINE_AVAILABLE
 
 
 @dataclass
@@ -160,6 +193,28 @@ class TurnResult:
         }
 
 
+def _gemini_error_category(error: Exception) -> str:
+    status_code = getattr(error, "status_code", None) or getattr(error, "code", None)
+    message = str(error).casefold()
+    if status_code in {401, 403}:
+        return "authentication"
+    if status_code == 429 or "rate limit" in message or "quota" in message or "resource exhausted" in message:
+        return "rate_limit"
+    if "timeout" in message or "timed out" in message or "deadline" in message:
+        return "timeout"
+    return "service"
+
+
+def _gemini_public_detail(category: str) -> str:
+    return {
+        "authentication": "AI service authentication failed. Please contact support.",
+        "rate_limit": "AI service capacity is temporarily exhausted. Please try again shortly.",
+        "timeout": "AI generation took too long. Your message was saved; please try again.",
+        "service": "AI generation is temporarily unavailable. Your message was saved; please try again.",
+        "not_configured": "AI generation is not configured.",
+    }.get(category, "AI generation is temporarily unavailable. Please try again.")
+
+
 class MannMitraService:
     """Reusable owner of the current single-process MannMitra resources."""
 
@@ -195,7 +250,8 @@ class MannMitraService:
             "about", "again", "ask", "before", "can", "could", "did", "discuss", "earlier",
             "from", "have", "help", "here", "how", "into", "just", "last", "me", "need",
             "previous", "recall", "remember", "say", "should", "talk", "tell", "that", "this",
-            "told", "want", "what", "with", "would", "yesterday", "you", "your",
+            "told", "want", "what", "with", "would", "yesterday", "you", "your", "previously",
+            "chat", "conversation", "history", "memory", "our", "remind", "recap", "summarize",
         }
         terms = set(re.findall(r"[a-z0-9]+", text.casefold()))
         return {term[:-1] if len(term) > 4 and term.endswith("s") else term for term in terms if len(term) > 2 and term not in ignored}
@@ -214,13 +270,27 @@ class MannMitraService:
         if ranked:
             ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
             return [item[2] for item in ranked[:2]]
-        if explicit:
-            # An explicit history question without a topic refers to the most recent prior chat.
-            return [candidates[0]]
-        similarities = self.rag_engine.semantic_similarities(query, [item["content"] for item in candidates[:24]])
+
+        # Topic-specific recall can still be relevant when wording differs
+        # from the original message, so try semantic ranking before falling
+        # back to the most recent prior message.
+        try:
+            similarities = self.rag_engine.semantic_similarities(
+                query, [item["content"] for item in candidates[:24]]
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Previous-chat semantic ranking unavailable (%s).", exc)
+            similarities = []
         semantic = [(score, candidates[index]) for index, score in enumerate(similarities) if score >= 0.42]
         semantic.sort(key=lambda item: (item[0], item[1]["created_at"]), reverse=True)
-        return [item[1] for item in semantic[:1]]
+        if semantic:
+            return [item[1] for item in semantic[:2]]
+        if explicit and not query_terms:
+            # An explicit history question without a recoverable topic refers
+            # to the most recent prior chat, whose surrounding context is
+            # bounded and fetched separately by the repository.
+            return [candidates[0]]
+        return []
 
     def generate_reply(
         self,
@@ -232,20 +302,23 @@ class MannMitraService:
     ) -> str:
         """The existing single-call Gemini response path for eligible turns."""
         if not self.gemini_available:
-            fallback = (
-                "I'm really glad you shared that.\n\n"
-                "- Thanks for opening up - you don't have to hold it all by yourself.\n"
-                "- Want to tell me a little more about what's been going on?"
-            )
-            return ("- I couldn't find matching information in your previous conversations.\n\n" + fallback) if memory_lookup_attempted else fallback
+            raise GeminiGenerationError("not_configured", "AI generation is not configured")
 
         context_note = ""
         if rag_context.is_used and rag_context.retrieved_documents:
-            joined = "\n\n".join(rag_context.retrieved_documents[:2])
-            context_note = (
-                # "\n\nHelpful background you may draw on (do not quote directly, "
-                # f"paraphrase naturally):\n{joined}"
-            )
+            chunks = [chunk.strip() for chunk in rag_context.retrieved_documents[:2] if chunk and chunk.strip()]
+            if chunks:
+                joined = "\n\n".join(
+                    f"[Support chunk {index}]\n{chunk}" for index, chunk in enumerate(chunks, start=1)
+                )
+                context_note = (
+                    "\n\n--- Retrieved support context (not conversation history) ---\n"
+                    "Use this reference material only when it is relevant to the student's current message. "
+                    "If it is not relevant, ignore it. Paraphrase it naturally; do not quote filenames or headers. "
+                    "Do not turn it into a diagnosis, medical claim, or guaranteed outcome.\n"
+                    f"{joined}\n"
+                    "--- End retrieved support context ---"
+                )
 
         convo_lines = []
         for turn in chat_history[0:]:
@@ -254,7 +327,10 @@ class MannMitraService:
         convo_text = "\n".join(convo_lines)
         memory_note = ""
         if previous_memory:
-            memory_lines = [f"Student (earlier chat): {turn['content']}" for turn in previous_memory]
+            memory_lines = []
+            for turn in previous_memory:
+                role = "Student" if turn.get("role") == "user" else "MannMitra"
+                memory_lines.append(f"{role} (earlier chat): {turn['content']}")
             memory_note = (
                 "\n\nRelevant previous-chat memory (separate from support documents; "
                 "use only when it helps answer the student's message):\n"
@@ -262,9 +338,11 @@ class MannMitraService:
             )
 
         prompt = (
-            f"Recent conversation:\n{convo_text}\n\n"
-            f"Student's latest message: {user_text}"
+            f"Conversation history (what has been said in this chat):\n{convo_text or '(none)'}"
             f"{memory_note}{context_note}\n\n"
+            f"Current student's message:\n{user_text}\n\n"
+            "Keep the response non-clinical and supportive. Use retrieved support context only when it helps; "
+            "never invent medical or psychological claims.\n\n"
             "Respond naturally as MannMitra:"
         )
 
@@ -289,12 +367,10 @@ class MannMitraService:
                 return "I couldn't find matching information in your previous conversations.\n\n" + reply
             return reply
         except Exception as exc:  # noqa: BLE001
-            logger.error("Gemini generation failed: %s", exc)
-            return (
-                "I'm here and listening.\n\n"
-                "I'm having a little trouble finding the right words right now.\n"
-                "Can you tell me more about how you're feeling?"
-            )
+            category = _gemini_error_category(exc)
+            logger.warning("Gemini generation failed category=%s model=%s", category, self.gemini_model)
+            raise GeminiGenerationError(category, _gemini_public_detail(category)) from exc
+
 
     def process_voice_input(self, audio_bytes: bytes, suffix: str = ".wav") -> dict[str, Any]:
         """Existing Whisper/acoustic/fusion path, extracted without algorithm changes."""
@@ -307,6 +383,7 @@ class MannMitraService:
             "acoustic_available": False,
             "fusion_source": "unavailable",
         }
+        self.speech_engine_available = _ensure_speech_engine()
         if not self.speech_engine_available:
             result["transcript_warning"] = "Speech engine is not installed; voice input is unavailable."
             return result

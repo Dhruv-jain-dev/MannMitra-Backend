@@ -1,4 +1,4 @@
-import { Activity, BarChart3, Brain, CheckCircle2, Gamepad2, HeartHandshake, Home, LogOut, MessageCircle, ShieldCheck, Users, X, Zap } from "lucide-react";
+import { Activity, BarChart3, CheckCircle2, Gamepad2, HeartHandshake, Home, LogOut, MessageCircle, ShieldCheck, X, Zap } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import Brand from "./Brand";
 
@@ -6,7 +6,7 @@ const studentItems = [
   ["/app/overview", "Overview", Home], ["/app/mannmitra", "MannMitra", MessageCircle], ["/app/checkin", "Daily Check-in", CheckCircle2], ["/app/wellness", "Wellness Zone", Gamepad2], ["/app/insights", "My Insights", BarChart3]
 ];
 const counselorItems = [
-  ["/app/counselor", "Command Overview", Home], ["/app/counselor/messages", "Priority Cases", Zap], ["/app/counselor/interventions", "Interventions", HeartHandshake], ["/app/counselor/followups", "Follow-ups Due", CheckCircle2], ["/app/counselor/analytics", "Campus Analytics", BarChart3]
+  ["/app/counselor", "Command Overview", Home], ["/app/counselor/messages", "Messages", MessageCircle], ["/app/counselor/cases", "Priority Cases", Zap], ["/app/counselor/interventions", "Interventions", HeartHandshake], ["/app/counselor/followups", "Follow-ups Due", CheckCircle2], ["/app/counselor/analytics", "Campus Analytics", BarChart3]
 ];
 const adminItems = [
   ["/app/admin", "Campus Overview", Home], ["/app/admin/departments", "Department Trends", Activity], ["/app/admin/forecast", "Stress Forecasting", BarChart3], ["/app/admin/governance", "Data Governance", ShieldCheck]

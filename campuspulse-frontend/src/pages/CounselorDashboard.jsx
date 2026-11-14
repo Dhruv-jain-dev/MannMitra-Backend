@@ -1,22 +1,51 @@
-import { Activity, ArrowUpRight, CalendarClock, CheckCircle2, Clock3, MessageCircle, ShieldCheck, TrendingDown, TrendingUp, Users, Zap } from "lucide-react";
+import { Activity, ArrowUpRight, CalendarClock, MessageCircle, ShieldCheck, Users, Zap } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import PageTitle from "../components/PageTitle";
 import StatCard from "../components/StatCard";
 import RiskBadge from "../components/RiskBadge";
 import PrivacyNote from "../components/PrivacyNote";
-import { priorityStudents } from "../data";
+import { getCounselorDashboard, getCounselorMessages } from "../services/counselor";
 
 export default function CounselorDashboard() {
+  const [dashboard, setDashboard] = useState(null);
+  const [messageThreads, setMessageThreads] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const loadDashboard = async () => {
+    setLoading(true); setError("");
+    try {
+      const [dashboardResponse, messagesResponse] = await Promise.all([getCounselorDashboard(), getCounselorMessages()]);
+      setDashboard(dashboardResponse.data);
+      setMessageThreads(messagesResponse.data.items || []);
+    }
+    catch (requestError) { setError(requestError.response?.data?.detail || requestError.message || "Unable to load the counselor dashboard."); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { loadDashboard(); }, []);
+
+  const cases = useMemo(() => dashboard?.assigned_cases || [], [dashboard]);
+  const openCases = useMemo(() => cases.filter(item => item.status !== "closed"), [cases]);
+  const uniqueStudents = new Set(cases.map(item => item.student_id)).size;
+  const moderateCases = cases.filter(item => item.priority === "moderate").length;
+  const priorityCases = cases.filter(item => item.priority === "priority").length;
+
   return <>
-    <PageTitle eyebrow="COUNSELOR CENTER" title="Student support command center." subtitle="Review prioritized signals, follow-ups and support requests while keeping intervention decisions human-led." action={<div className="mini-user"><div className="avatar">C</div><span>Counselor workspace</span></div>} />
-    <div className="signal-banner"><ShieldCheck size={20}/><div><b>CampusPulse Signal Intelligence <span className="privacy-tag">PRIVACY PROTECTED</span></b><span>AI-generated support signals highlight longitudinal pattern changes. Final intervention decisions always belong to authorized human counselors.</span></div></div>
-    <div className="stats-grid counselor-stats-wide"><StatCard label="Students monitored" value="420" detail="Across assigned caseload" icon={Users}/><StatCard label="Moderate support" value="8" detail="Wellness pathways active" icon={Activity}/><StatCard label="Priority review" value="3" detail="Human review queued" icon={Zap}/><StatCard label="Follow-ups due" value="6" detail="Next 7 days" icon={CalendarClock}/></div>
-    <div className="counselor-dashboard-grid">
-      <section className="card counselor-panel"><div className="card-top"><div><span className="eyebrow">STUDENT PRIORITY QUEUE</span><h2>Support signals needing attention</h2><p className="panel-subtext">Use the queue to decide where human review may be useful. Identifiers are anonymized in this frontend.</p></div><span className="queue-count">5 students</span></div><div className="priority-table"><div className="priority-head"><span>STUDENT</span><span>SUPPORT PRIORITY</span><span>TREND</span><span>RECOMMENDED ACTION</span></div>{priorityStudents.map(s => <div className="priority-row" key={s.id}><div><b>{s.id}</b><span>{s.department} · {s.year}</span></div><div><RiskBadge level={s.priority}/><small>Signal {s.score}</small></div><div className={`trend ${s.trend === "Improving" ? "improving" : "declining"}`}>{s.trend === "Improving" ? <TrendingUp size={11}/> : <TrendingDown size={11}/>} {s.trend}</div><div className="action-cell"><span>{s.note}</span><ArrowUpRight size={14}/></div></div>)}</div></section>
-      <aside className="counselor-side-stack"><section className="card mini-panel"><div className="mini-panel-head"><div><span className="eyebrow">TODAY</span><h3>Follow-up plan</h3></div><CalendarClock size={18}/></div><div className="task-list"><div><span className="task-dot urgent"/><div><b>Priority review</b><small>3 cases awaiting human review</small></div></div><div><span className="task-dot"/><div><b>Check-in follow-up</b><small>4 students due today</small></div></div><div><span className="task-dot"/><div><b>Care-plan review</b><small>2 active plans this week</small></div></div></div></section><section className="card mini-panel"><div className="mini-panel-head"><div><span className="eyebrow">SUPPORT ACTIVITY</span><h3>Caseload pulse</h3></div><MessageCircle size={18}/></div><div className="activity-bars"><Bar label="Check-ins completed" value={82}/><Bar label="Follow-ups on time" value={91}/><Bar label="Wellness referrals" value={64}/></div></section></aside>
-    </div>
-    <section className="card counselor-panel messages-panel"><div className="card-top"><div><span className="eyebrow">STUDENT MESSAGES</span><h2>Requests from students</h2></div><span className="small-muted">Connect backend message API here</span></div><div className="message-grid"><MessageItem text="I'd like to talk about academic pressure." /><MessageItem text="Can I schedule a wellbeing appointment?" /><MessageItem text="I used the wellness activity and want to discuss how I'm feeling." /></div></section>
-    <PrivacyNote>Use role-based access, consent, purpose limitation, minimum necessary data and human review when connecting the production backend. This UI does not make clinical decisions.</PrivacyNote>
+    <PageTitle eyebrow="COUNSELOR CENTER" title="Student support command center." subtitle="Review assigned cases, follow-ups and support signals while keeping intervention decisions human-led." action={<div className="mini-user"><div className="avatar">C</div><span>Counselor workspace</span></div>} />
+    <div className="signal-banner"><ShieldCheck size={20}/><div><b>CampusPulse Signal Intelligence <span className="privacy-tag">PRIVACY PROTECTED</span></b><span>Only cases assigned to your counselor account are shown. MannMitra conversations are not exposed here.</span></div></div>
+    {loading ? <StateCard text="Loading assigned cases…"/> : error ? <StateCard text={error} action={<button className="btn btn-soft" onClick={loadDashboard}>Try again</button>}/> : <>
+      <div className="stats-grid counselor-stats-wide"><StatCard label="Students monitored" value={uniqueStudents} detail="Unique assigned students" icon={Users}/><StatCard label="Moderate support" value={moderateCases} detail="Assigned active cases" icon={Activity}/><StatCard label="Priority review" value={priorityCases} detail="Human review queue" icon={Zap}/><StatCard label="Follow-ups due" value={dashboard.upcoming_followups.length} detail="Upcoming assigned follow-ups" icon={CalendarClock}/></div>
+      <div className="counselor-dashboard-grid">
+        <section className="card counselor-panel"><div className="card-top"><div><span className="eyebrow">STUDENT PRIORITY QUEUE</span><h2>Support signals needing attention</h2><p className="panel-subtext">Review only the students assigned to your counselor account.</p></div><span className="queue-count">{openCases.length} open cases</span></div><div className="priority-table"><div className="priority-head"><span>STUDENT</span><span>SUPPORT PRIORITY</span><span>STATUS</span><span>CASE SUMMARY</span></div>{openCases.length ? openCases.map(item => <div className="priority-row" key={item.id}><div><b>{item.student_id}</b><span>{item.latest_check_in ? `Latest stress ${item.latest_check_in.stress_level}/10` : "No check-in yet"}</span></div><div><RiskBadge level={priorityLabel(item.priority)}/><small>{item.latest_check_in ? `Mood: ${item.latest_check_in.mood}` : "No signal"}</small></div><div className={`trend ${item.status === "in_progress" ? "declining" : "improving"}`}>{item.status.replace("_", " ")}</div><div className="action-cell"><span>{item.summary}</span><ArrowUpRight size={14}/></div></div>) : <EmptyRow text="No open assigned cases."/>}</div></section>
+        <aside className="counselor-side-stack"><section className="card mini-panel"><div className="mini-panel-head"><div><span className="eyebrow">UPCOMING</span><h3>Follow-up plan</h3></div><CalendarClock size={18}/></div>{dashboard.upcoming_followups.length ? <div className="task-list">{dashboard.upcoming_followups.map(item => <div key={item.id}><span className="task-dot urgent"/><div><b>{item.student_id}</b><small>{item.summary}</small></div></div>)}</div> : <p className="small-muted">No upcoming follow-ups.</p>}</section><section className="card mini-panel"><div className="mini-panel-head"><div><span className="eyebrow">CASE ACTIVITY</span><h3>Assigned workload</h3></div><MessageCircle size={18}/></div><div className="activity-bars"><Bar label="Open cases" value={cases.length ? Math.round((openCases.length / cases.length) * 100) : 0}/><Bar label="Priority cases" value={cases.length ? Math.round((priorityCases / cases.length) * 100) : 0}/><Bar label="Cases with follow-up" value={cases.length ? Math.round((dashboard.upcoming_followups.length / cases.length) * 100) : 0}/></div></section></aside>
+      </div>
+      <section className="card counselor-panel messages-panel"><div className="card-top"><div><span className="eyebrow">STUDENT MESSAGES</span><h2>Requests from students</h2></div><MessageCircle size={20}/></div>{messageThreads.length ? <div className="task-list">{messageThreads.slice(0, 5).map(thread => <div key={thread.id}><span className="task-dot urgent"/><div><b>{thread.student_id}</b><small>{thread.unread_count ? `${thread.unread_count} unread message${thread.unread_count === 1 ? "" : "s"}` : "No unread messages"}</small></div><small>{thread.messages?.at(-1)?.created_at ? new Date(thread.messages.at(-1).created_at).toLocaleString() : ""}</small></div>)}</div> : <div className="empty-state"><MessageCircle size={24}/><h3>No counselor messages yet</h3><p>Messages from assigned students will appear here.</p></div>}</section>
+    </>}
+    <PrivacyNote>AI signals support review; they do not diagnose or decide interventions. Case access is limited to assigned counselor records.</PrivacyNote>
   </>;
 }
+
+function priorityLabel(priority) { return priority === "priority" ? "Priority review" : priority === "moderate" ? "Moderate support" : "Stable signal"; }
 function Bar({ label, value }) { return <div><span>{label}</span><b>{value}%</b><i><em style={{ width: `${value}%` }}/></i></div>; }
-function MessageItem({ text }) { return <div className="message-mini"><div className="avatar">S</div><div><b>Anonymous student</b><p>{text}</p><small>New · human response recommended</small></div><button className="btn btn-soft">Review</button></div>; }
+function EmptyRow({ text }) { return <div className="empty-state"><p>{text}</p></div>; }
+function StateCard({ text, action }) { return <div className="card placeholder-panel"><p>{text}</p>{action}</div>; }

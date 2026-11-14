@@ -13,8 +13,9 @@ the MannMitra backend.
    driver URL at startup.
 3. Install dependencies with `pip install -r requirements.txt` so `psycopg`
    is available.
-4. Start the API. Its startup lifecycle calls `Base.metadata.create_all()`,
-   which creates the required schema without deleting existing tables or data.
+4. Apply the existing Alembic migrations during the deployment process, then
+   start the API. The application uses the same URL resolver as Alembic and
+   requires PostgreSQL.
 
 Example (use your own values locally; never commit them):
 
@@ -24,7 +25,6 @@ MANNMITRA_ENV=development
 MANNMITRA_AUTH_JWT_SECRET=your-local-secret
 ```
 
-The existing `mannmitra_dev.db` SQLite file is not migrated or removed. It
-remains the local fallback only when neither `DATABASE_URL` nor
-`MANNMITRA_DATABASE_URL` is set. Moving existing SQLite records to Supabase
+The existing `mannmitra_dev.db` SQLite file is not migrated, removed, or used
+by the application configuration. Moving any SQLite records to Supabase
 requires a separate, reviewed data migration.

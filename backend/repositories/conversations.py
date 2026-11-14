@@ -305,6 +305,7 @@ class ConversationRepository:
         limit: int = 40,
     ) -> list[dict[str, Any]]:
         """Fetch recent, user-owned prior messages for service-side relevance ranking."""
+        limit = max(1, min(limit, 40))
         with self._session() as session:
             candidates = list(
                 session.execute(

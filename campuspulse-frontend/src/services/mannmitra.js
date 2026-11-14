@@ -17,7 +17,7 @@ export async function getConversationAnalytics(conversationId) {
 }
 
 export async function sendTextMessage(payload) {
-  return api.post(apiConfig.mannmitraText, payload);
+  return api.post(apiConfig.mannmitraText, payload, { timeout: 90000 });
 }
 
 export async function sendVoiceMessage({ conversationId, requestId, audio }) {
@@ -27,6 +27,7 @@ export async function sendVoiceMessage({ conversationId, requestId, audio }) {
   formData.append("audio", audio, audio.name || "recording.wav");
 
   return api.post(apiConfig.mannmitraVoice, formData, {
-    headers: { "Content-Type": "multipart/form-data" }
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 90000
   });
 }

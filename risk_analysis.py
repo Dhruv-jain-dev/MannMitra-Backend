@@ -24,29 +24,42 @@ logger = logging.getLogger("mannmitra.risk_analysis")
 # --------------------------------------------------------------------------
 _HF_AVAILABLE = False
 _hf_pipeline = None
+_hf_pipeline_factory = None
+_HF_IMPORT_ATTEMPTED = False
+_HF_LOAD_ATTEMPTED = False
 
-try:
-    from transformers import pipeline as _hf_pipeline_factory
+def _load_hf_pipeline():
+    from transformers import pipeline
 
-    _HF_TOKEN = os.getenv("HF_TOKEN")
+    kwargs = {
+        "task": "text-classification",
+        "model": "SamLowe/roberta-base-go_emotions",
+        "top_k": None,  # return scores for all 28 classes
+    }
+    token = os.getenv("HF_TOKEN")
+    if token:
+        kwargs["token"] = token
+    return pipeline(**kwargs)
 
-    def _load_hf_pipeline():
-        kwargs = {
-            "task": "text-classification",
-            "model": "SamLowe/roberta-base-go_emotions",
-            "top_k": None,  # return scores for all 28 classes
-        }
-        if _HF_TOKEN:
-            kwargs["token"] = _HF_TOKEN
-        return _hf_pipeline_factory(**kwargs)
 
-    _hf_pipeline = _load_hf_pipeline()
-    _HF_AVAILABLE = True
-    logger.info("Loaded SamLowe/roberta-base-go_emotions transformer pipeline.")
-except Exception as exc:  # noqa: BLE001 - deliberately broad, this is a fallback path
-    logger.warning("Transformer pipeline unavailable (%s). Falling back to lexicon scorer.", exc)
-    _HF_AVAILABLE = False
-    _hf_pipeline = None
+def _ensure_hf_pipeline() -> bool:
+    """Load the unchanged transformer on first inference, not at import time."""
+    global _HF_AVAILABLE, _HF_IMPORT_ATTEMPTED, _HF_LOAD_ATTEMPTED, _hf_pipeline, _hf_pipeline_factory
+    if _HF_LOAD_ATTEMPTED:
+        return _HF_AVAILABLE and _hf_pipeline is not None
+    _HF_LOAD_ATTEMPTED = True
+    try:
+        if not _HF_IMPORT_ATTEMPTED:
+            _HF_IMPORT_ATTEMPTED = True
+            _hf_pipeline_factory = _load_hf_pipeline
+        _hf_pipeline = _hf_pipeline_factory()
+        _HF_AVAILABLE = True
+        logger.info("Loaded SamLowe/roberta-base-go_emotions transformer pipeline.")
+    except Exception as exc:  # noqa: BLE001 - preserve lexicon fallback behavior
+        logger.warning("Transformer pipeline unavailable (%s). Falling back to lexicon scorer.", exc)
+        _HF_AVAILABLE = False
+        _hf_pipeline = None
+    return _HF_AVAILABLE and _hf_pipeline is not None
 
 # --------------------------------------------------------------------------
 # GoEmotions 28-class taxonomy, grouped by distress polarity
@@ -196,7 +209,7 @@ class RiskAnalyzer:
         if not text:
             return EmotionResult(label="neutral", score=1.0, all_emotions={"neutral": 1.0}, backend="lexicon")
 
-        if _HF_AVAILABLE and _hf_pipeline is not None:
+        if _ensure_hf_pipeline():
             try:
                 raw = _hf_pipeline(text)
                 # top_k=None returns [[{label, score}, ...]]

@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import AmbientBackground from "./components/AmbientBackground";
 import Layout from "./components/Layout";
-import { clearUser, getStoredUser } from "./services/auth";
+import { clearUser, getCurrentProfile, getStoredUser, restoreSession } from "./services/auth";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
@@ -14,6 +14,7 @@ import Insights from "./pages/Insights";
 import CounselorDashboard from "./pages/CounselorDashboard";
 import AdminDashboard from "./pages/AdminDashboard";
 import CounselorPriorityCases from "./pages/CounselorPriorityCases";
+import CounselorMessages from "./pages/CounselorMessages";
 import CounselorInterventions from "./pages/CounselorInterventions";
 import CounselorFollowups from "./pages/CounselorFollowups";
 import CounselorAnalytics from "./pages/CounselorAnalytics";
@@ -23,10 +24,13 @@ import AdminGovernance from "./pages/AdminGovernance";
 
 export default function App() {
   const [user, setUser] = useState(getStoredUser);
+  const [restoring, setRestoring] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   const role = user?.role;
   const login = profile => setUser(profile);
-  const logout = () => { clearUser(); setUser(null); setMobileOpen(false); };
+  useEffect(() => { restoreSession().then(session => session ? getCurrentProfile().then(setUser).catch(() => setUser(null)) : setUser(null)).catch(() => setUser(null)).finally(() => setRestoring(false)); }, []);
+  const logout = async () => { await clearUser(); setUser(null); setMobileOpen(false); };
+  if (restoring) return <div className="app-shell" />;
   return <div className="app-shell"><AmbientBackground /><Routes>
     <Route path="/" element={<Landing />} />
     <Route path="/login" element={<Login onLogin={login} />} />
@@ -39,7 +43,8 @@ export default function App() {
       </>}
       {role === "counselor" && <>
         <Route path="counselor" element={<CounselorDashboard />} />
-        <Route path="counselor/messages" element={<CounselorPriorityCases />} />
+      <Route path="counselor/messages" element={<CounselorMessages />} />
+      <Route path="counselor/cases" element={<CounselorPriorityCases />} />
         <Route path="counselor/interventions" element={<CounselorInterventions />} />
         <Route path="counselor/followups" element={<CounselorFollowups />} />
         <Route path="counselor/analytics" element={<CounselorAnalytics />} />

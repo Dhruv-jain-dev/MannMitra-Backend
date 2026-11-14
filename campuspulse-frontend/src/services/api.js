@@ -19,6 +19,16 @@ export const apiConfig = {
   mannmitraText: "/api/mannmitra/text",
   mannmitraVoice: "/api/mannmitra/voice",
   checkIn: "/api/wellbeing/check-in",
+  checkIns: "/api/wellbeing/check-ins",
   insights: "/api/wellbeing/insights",
-  counselorMessages: "/api/counselor/messages"
+  counselorDashboard: "/api/counselor/dashboard",
+  counselorCases: "/api/counselor/cases",
+  counselorInterventions: "/api/counselor/interventions",
+  counselorFollowups: "/api/counselor/followups",
+  adminDashboard: "/api/admin/dashboard",
+  adminDepartments: "/api/admin/departments",
+  adminAnalytics: "/api/admin/analytics",
+  counselorContacts: "/api/counselor/contacts",
+  counselorMessages: "/api/counselor/messages",
+  counselorMessagesRead: "/api/counselor/messages"
 };
