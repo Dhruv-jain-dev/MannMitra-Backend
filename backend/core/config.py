@@ -23,6 +23,8 @@ class Settings:
     supabase_jwt_issuer: str | None = None
     supabase_jwt_audience: str = "authenticated"
     supabase_jwt_secret: str | None = None
+    admin_bootstrap_enabled: bool = False
+    admin_bootstrap_target_id: str | None = None
     max_audio_upload_bytes: int = 10 * 1024 * 1024
 
 
@@ -60,5 +62,7 @@ def get_settings() -> Settings:
         supabase_jwt_issuer=os.environ.get("SUPABASE_JWT_ISSUER") or None,
         supabase_jwt_audience=os.environ.get("SUPABASE_JWT_AUDIENCE", "authenticated"),
         supabase_jwt_secret=os.environ.get("SUPABASE_JWT_SECRET") or None,
+        admin_bootstrap_enabled=os.environ.get("ADMIN_BOOTSTRAP_ENABLED", "false").strip().lower() == "true",
+        admin_bootstrap_target_id=os.environ.get("ADMIN_BOOTSTRAP_TARGET_ID") or None,
         max_audio_upload_bytes=int(os.environ.get("MANNMITRA_MAX_AUDIO_UPLOAD_BYTES", 10 * 1024 * 1024)),
     )

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import contextmanager
+from collections.abc import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
@@ -27,6 +29,21 @@ class Database:
         connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
         self.engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
         self.session_factory = sessionmaker(bind=self.engine, autoflush=False, expire_on_commit=False)
+
+    @contextmanager
+    def session_for_identity(self, subject: str) -> Iterator[Session]:
+        """Yield a session whose PostgreSQL transactions carry one JWT subject.
+
+        ``SET LOCAL`` is issued by the ``after_begin`` hook below, so a pooled
+        connection never retains the subject after commit/rollback. SQLite
+        sessions remain unchanged for local compatibility tests.
+        """
+        session = self.session_factory()
+        session.info["jwt_subject"] = subject
+        try:
+            yield session
+        finally:
+            session.close()
 
     def create_all(self) -> None:
         """Create missing tables for isolated local/test databases.
@@ -63,3 +80,13 @@ class Database:
     def dispose(self) -> None:
         """Release pooled database connections during application shutdown."""
         self.engine.dispose()
+
+
+@event.listens_for(Session, "after_begin")
+def _propagate_jwt_subject(session: Session, transaction, connection) -> None:
+    subject = session.info.get("jwt_subject")
+    if subject and connection.dialect.name == "postgresql":
+        connection.execute(
+            text("SELECT set_config('request.jwt.claim.sub', :subject, true)"),
+            {"subject": subject},
+        )

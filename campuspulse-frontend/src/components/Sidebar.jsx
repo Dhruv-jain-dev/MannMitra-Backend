@@ -1,15 +1,15 @@
-import { Activity, BarChart3, CheckCircle2, Gamepad2, HeartHandshake, Home, LogOut, MessageCircle, ShieldCheck, X, Zap } from "lucide-react";
+import { Activity, BarChart3, CheckCircle2, Gamepad2, HeartHandshake, Home, LogOut, MessageCircle, ShieldCheck, Users, X, Zap } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import Brand from "./Brand";
 
 const studentItems = [
-  ["/app/overview", "Overview", Home], ["/app/mannmitra", "MannMitra", MessageCircle], ["/app/checkin", "Daily Check-in", CheckCircle2], ["/app/wellness", "Wellness Zone", Gamepad2], ["/app/insights", "My Insights", BarChart3]
+  ["/app/overview", "Overview", Home], ["/app/mannmitra", "MannMitra", MessageCircle], ["/app/anonymous-support", "Counselor Support", HeartHandshake], ["/app/checkin", "Daily Check-in", CheckCircle2], ["/app/wellness", "Wellness Zone", Gamepad2], ["/app/insights", "My Insights", BarChart3]
 ];
 const counselorItems = [
-  ["/app/counselor", "Command Overview", Home], ["/app/counselor/messages", "Messages", MessageCircle], ["/app/counselor/cases", "Priority Cases", Zap], ["/app/counselor/interventions", "Interventions", HeartHandshake], ["/app/counselor/followups", "Follow-ups Due", CheckCircle2], ["/app/counselor/analytics", "Campus Analytics", BarChart3]
+  ["/app/counselor", "Command Overview", Home], ["/app/counselor/anonymous-support", "Anonymous Inbox", ShieldCheck], ["/app/counselor/students", "Assigned Students", Users], ["/app/counselor/messages", "Messages", MessageCircle], ["/app/counselor/cases", "Priority Cases", Zap], ["/app/counselor/interventions", "Interventions", HeartHandshake], ["/app/counselor/followups", "Follow-ups Due", CheckCircle2], ["/app/counselor/analytics", "Campus Analytics", BarChart3], ["/app/counselor/profile", "My Profile", ShieldCheck]
 ];
 const adminItems = [
-  ["/app/admin", "Campus Overview", Home], ["/app/admin/departments", "Department Trends", Activity], ["/app/admin/forecast", "Stress Forecasting", BarChart3], ["/app/admin/governance", "Data Governance", ShieldCheck]
+  ["/app/admin", "Campus Overview", Home], ["/app/admin/users", "User Management", Users], ["/app/admin/cases", "Case Management", Zap], ["/app/admin/operations", "Care Operations", HeartHandshake], ["/app/admin/departments", "Department Trends", Activity], ["/app/admin/forecast", "Stress Forecasting", BarChart3], ["/app/admin/governance", "Data Governance", ShieldCheck]
 ];
 
 export default function Sidebar({ user, open, onClose, onLogout }) {

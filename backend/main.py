@@ -7,10 +7,13 @@ from datetime import datetime, timezone
 from datetime import date, timedelta
 import logging
 import asyncio
+import re
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import time
 from typing import Any, Callable, Literal
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,8 +24,21 @@ from sqlalchemy import func, select
 
 from backend.core.config import Settings, get_settings
 from backend.core.database import Database
-from backend.core.auth import AuthService, AuthenticatedUser, get_current_user, get_verified_subject, require_admin, require_counselor, require_student
-from backend.models import CheckIn, Conversation, FollowUp, Intervention, Message, SupportCase, User
+from backend.core.auth import AuthService, AuthenticatedUser, get_current_user, get_verified_subject, require_active_user, require_admin, require_counselor, require_student
+from backend.models import (
+    AnonymousSupportAuditEvent,
+    AnonymousSupportConversation,
+    AnonymousSupportFollowUp,
+    AnonymousSupportMessage,
+    AnonymousSupportNote,
+    CheckIn,
+    Conversation,
+    FollowUp,
+    Intervention,
+    Message,
+    SupportCase,
+    User,
+)
 from backend.repositories.conversations import ConversationRepository, conversation_to_dict, message_to_dict
 from backend.services.mannmitra_service import GeminiGenerationError, MannMitraService
 from backend.services.supabase_auth_admin import SupabaseAdminError, SupabaseAuthAdmin
@@ -58,6 +74,7 @@ class TokenResponse(BaseModel):
 class CurrentUserResponse(BaseModel):
     id: str
     role: str
+    must_change_password: bool = False
 
 
 class ConversationResponse(BaseModel):
@@ -167,6 +184,26 @@ class CaseDetailResponse(CaseResponse):
     check_ins: list[CheckInResponse]
 
 
+class CounselorStudentResponse(BaseModel):
+    id: str
+    department: str | None
+    created_at: Any
+    latest_check_in: dict[str, Any] | None
+    open_case_count: int
+
+
+class CounselorStudentDetailResponse(CounselorStudentResponse):
+    check_ins: list[CheckInResponse]
+    cases: list[CaseResponse]
+
+
+class CounselorProfileResponse(BaseModel):
+    id: str
+    role: str
+    department: str | None
+    created_at: Any
+
+
 class CounselorDashboardResponse(BaseModel):
     assigned_cases: list[CaseResponse]
     open_case_count: int
@@ -206,7 +243,7 @@ class AdminAnalyticsResponse(AdminDashboardResponse):
 
 
 AdminRole = Literal["student", "counselor", "admin"]
-ProvisionedRole = Literal["counselor", "admin"]
+ProvisionedRole = Literal["student", "counselor", "admin"]
 
 
 class AdminUserResponse(BaseModel):
@@ -214,6 +251,7 @@ class AdminUserResponse(BaseModel):
     role: AdminRole
     department: str | None
     created_at: Any
+    must_change_password: bool = False
 
 
 class AdminUsersResponse(BaseModel):
@@ -224,17 +262,15 @@ class AdminUsersResponse(BaseModel):
 
 
 class ProvisionUserRequest(BaseModel):
-    """Provision an application profile for an identity created by the IdP.
-
-    This endpoint deliberately does not accept passwords or create an
-    authentication identity. The supplied id must be the verified identity
-    subject from the configured provider.
-    """
+    """Provision an Auth identity and its matching application profile."""
 
     id: str | None = Field(default=None, min_length=1, max_length=128)
     email: str | None = Field(default=None, min_length=3, max_length=320)
     role: ProvisionedRole
     department: str | None = Field(default=None, min_length=1, max_length=128)
+    method: Literal["invite", "temporary_password"] = "invite"
+    password: str | None = Field(default=None, max_length=128)
+    password_confirmation: str | None = Field(default=None, max_length=128)
 
 
 class RoleUpdateRequest(BaseModel):
@@ -352,6 +388,78 @@ class CounselorContactResponse(BaseModel):
 class ReadMessagesResponse(BaseModel):
     conversation_id: str
     marked_read: int
+
+
+AnonymousCategory = Literal["emotional_support", "academic", "safety", "other"]
+AnonymousUrgency = Literal["stable", "moderate", "urgent"]
+AnonymousStatus = Literal["pending", "active", "closed"]
+AnonymousFollowUpStatus = Literal["scheduled", "completed", "cancelled"]
+
+
+class AnonymousConversationCreateRequest(BaseModel):
+    category: AnonymousCategory
+    urgency: AnonymousUrgency = "moderate"
+    consent: bool
+
+
+class AnonymousMessageRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=5000)
+
+
+class AnonymousStatusRequest(BaseModel):
+    status: AnonymousStatus
+
+
+class AnonymousNoteRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class AnonymousFollowUpRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    due_at: datetime
+
+
+class AnonymousConversationSummary(BaseModel):
+    id: str
+    anonymous_alias: str
+    category: str
+    urgency: str
+    status: str
+    created_at: Any
+    updated_at: Any
+    closed_at: Any
+
+
+class AnonymousMessageResponse(BaseModel):
+    id: str
+    sender_role: Literal["student", "counselor"]
+    content: str
+    created_at: Any
+    read_at: Any
+
+
+class AnonymousConversationResponse(AnonymousConversationSummary):
+    messages: list[AnonymousMessageResponse]
+    followups: list[AnonymousFollowUpResponse] = Field(default_factory=list)
+
+
+class AnonymousNoteResponse(BaseModel):
+    id: str
+    content: str
+    created_at: Any
+    updated_at: Any
+
+
+class AnonymousFollowUpResponse(BaseModel):
+    id: str
+    title: str
+    due_at: Any
+    status: str
+
+
+class AnonymousCounselorConversationResponse(AnonymousConversationResponse):
+    notes: list[AnonymousNoteResponse]
+    followups: list[AnonymousFollowUpResponse]
 
 
 def support_case_to_dict(case: SupportCase, latest_check_in: CheckIn | None = None) -> dict[str, Any]:
@@ -520,6 +628,115 @@ def _counselor_case(session, case_id: str, counselor_id: str) -> SupportCase:
     return case
 
 
+def _anonymous_message_dict(message: AnonymousSupportMessage) -> dict[str, Any]:
+    return {
+        "id": message.id,
+        "sender_role": message.sender_role,
+        "content": message.content,
+        "created_at": message.created_at,
+        "read_at": message.read_at,
+    }
+
+
+def _anonymous_summary(conversation: AnonymousSupportConversation) -> dict[str, Any]:
+    return {
+        "id": conversation.id,
+        "anonymous_alias": conversation.anonymous_alias,
+        "category": conversation.category,
+        "urgency": conversation.urgency,
+        "status": conversation.status,
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+        "closed_at": conversation.closed_at,
+    }
+
+
+def _anonymous_response(session, conversation: AnonymousSupportConversation, include_private: bool = False) -> dict[str, Any]:
+    result = {
+        **_anonymous_summary(conversation),
+        "messages": [
+            _anonymous_message_dict(item)
+            for item in session.scalars(
+                select(AnonymousSupportMessage)
+                .where(AnonymousSupportMessage.conversation_id == conversation.id)
+                .order_by(AnonymousSupportMessage.position)
+                .limit(500)
+            )
+        ],
+        "followups": [
+            {"id": item.id, "title": item.title, "due_at": item.due_at, "status": item.status}
+            for item in session.scalars(
+                select(AnonymousSupportFollowUp)
+                .where(AnonymousSupportFollowUp.conversation_id == conversation.id)
+                .order_by(AnonymousSupportFollowUp.due_at.asc())
+            )
+        ],
+    }
+    if include_private:
+        result["notes"] = [
+            {"id": item.id, "content": item.content, "created_at": item.created_at, "updated_at": item.updated_at}
+            for item in session.scalars(
+                select(AnonymousSupportNote)
+                .where(AnonymousSupportNote.conversation_id == conversation.id)
+                .order_by(AnonymousSupportNote.created_at.desc())
+            )
+        ]
+        result["followups"] = [
+            {"id": item.id, "title": item.title, "due_at": item.due_at, "status": item.status}
+            for item in session.scalars(
+                select(AnonymousSupportFollowUp)
+                .where(AnonymousSupportFollowUp.conversation_id == conversation.id)
+                .order_by(AnonymousSupportFollowUp.due_at.asc())
+            )
+        ]
+    return result
+
+
+def _new_anonymous_alias(session) -> str:
+    for _ in range(10):
+        candidate = f"Mitra-{secrets.token_hex(5).upper()}"
+        if session.scalar(select(AnonymousSupportConversation.id).where(AnonymousSupportConversation.anonymous_alias == candidate)) is None:
+            return candidate
+    raise HTTPException(status_code=503, detail="Unable to allocate a private support alias")
+
+
+def _anonymous_student_conversation(session, conversation_id: str, student_id: str) -> AnonymousSupportConversation:
+    conversation = session.scalar(
+        select(AnonymousSupportConversation).where(
+            AnonymousSupportConversation.id == conversation_id,
+            AnonymousSupportConversation.student_user_id == student_id,
+        )
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Anonymous support conversation not found")
+    return conversation
+
+
+def _anonymous_counselor_conversation(session, conversation_id: str, counselor_id: str) -> AnonymousSupportConversation:
+    conversation = session.scalar(
+        select(AnonymousSupportConversation).where(
+            AnonymousSupportConversation.id == conversation_id,
+            AnonymousSupportConversation.assigned_counselor_id == counselor_id,
+        )
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Anonymous support conversation not found")
+    return conversation
+
+
+def _anonymous_counselor_viewable_conversation(session, conversation_id: str, counselor_id: str) -> AnonymousSupportConversation:
+    conversation = session.scalar(
+        select(AnonymousSupportConversation).where(
+            AnonymousSupportConversation.id == conversation_id,
+            (AnonymousSupportConversation.assigned_counselor_id == counselor_id)
+            | ((AnonymousSupportConversation.assigned_counselor_id.is_(None)) & (AnonymousSupportConversation.status == "pending")),
+        )
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Anonymous support conversation not found")
+    return conversation
+
+
 def create_app(
     app_settings: Settings | None = None,
     service_factory: Callable[[], MannMitraService] = MannMitraService,
@@ -565,7 +782,14 @@ def create_app(
     if resolved_settings.environment.lower() in {"development", "dev", "test"}:
         api.add_middleware(
             CORSMiddleware,
-            allow_origins=["http://localhost:5317"],
+            allow_origins=[
+                "http://localhost:5317",
+                "http://localhost:5318",
+                "http://localhost:5319",
+                "http://127.0.0.1:5317",
+                "http://127.0.0.1:5318",
+                "http://127.0.0.1:5319",
+            ],
             allow_credentials=False,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -656,7 +880,7 @@ def create_app(
             users = list(session.scalars(base.order_by(User.created_at.desc(), User.id).offset((page - 1) * page_size).limit(page_size)))
             return {
                 "items": [
-                    {"id": item.id, "role": item.role, "department": item.department, "created_at": item.created_at}
+                    {"id": item.id, "role": item.role, "department": item.department, "created_at": item.created_at, "must_change_password": item.must_change_password}
                     for item in users
                 ],
                 "page": page,
@@ -674,7 +898,7 @@ def create_app(
             target = session.get(User, user_id)
             if target is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-            return {"id": target.id, "role": target.role, "department": target.department, "created_at": target.created_at}
+            return {"id": target.id, "role": target.role, "department": target.department, "created_at": target.created_at, "must_change_password": target.must_change_password}
 
     @api.post("/api/admin/users/provision", response_model=AdminUserResponse, status_code=status.HTTP_201_CREATED)
     def provision_admin_user(
@@ -685,16 +909,71 @@ def create_app(
         """Create only an app profile for a separately provisioned IdP identity."""
         if payload.id == user.id:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An administrator cannot provision their own role")
+        normalized_email = payload.email.strip().lower() if payload.email else None
+        if normalized_email is not None and ("@" not in normalized_email or any(character.isspace() for character in normalized_email)):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A valid email address is required")
+        normalized_department = payload.department.strip() if payload.department is not None else None
+        if payload.department is not None and not normalized_department:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Department cannot be blank")
+        if payload.method == "temporary_password":
+            password = payload.password or ""
+            if password != (payload.password_confirmation or ""):
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Temporary password and confirmation do not match")
+            if len(password) < 12 or not re.search(r"[A-Z]", password) or not re.search(r"[a-z]", password) or not re.search(r"\d", password) or not re.search(r"[^A-Za-z0-9]", password):
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Temporary password must be at least 12 characters and include uppercase, lowercase, number and symbol")
+        elif payload.password or payload.password_confirmation:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Passwords are only accepted for temporary-password provisioning")
         identity_id = payload.id
-        if resolved_settings.supabase_url or resolved_settings.supabase_service_role_key:
+        created_identity = False
+        local_identity_registry = getattr(request.app.state, "local_test_identity_registry", None)
+        local_identity_created = False
+        must_change_password = payload.method == "temporary_password"
+        if environment_name in {"development", "dev", "test"} and local_identity_registry is not None:
+            # This branch exists only on the explicitly isolated local HTTP
+            # harness. Production never receives this registry and therefore
+            # cannot accept synthetic identities as Supabase identities.
+            if identity_id:
+                local_identity = local_identity_registry.get(identity_id)
+                if local_identity is None:
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Local test identity is not registered")
+                if normalized_email and local_identity["email"] != normalized_email:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email and local identity refer to different accounts")
+            else:
+                if not normalized_email:
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="email is required for local test provisioning")
+                if any(item["email"] == normalized_email for item in local_identity_registry.values()):
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A local test identity already exists for this email")
+                identity_id = str(uuid4())
+                local_identity_registry[identity_id] = {"email": normalized_email}
+                local_identity_created = True
+                created_identity = True
+        elif resolved_settings.supabase_url or resolved_settings.supabase_service_role_key:
             if not resolved_settings.supabase_url or not resolved_settings.supabase_service_role_key:
                 raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Supabase Auth provisioning is not configured")
-            if not payload.email:
+            if not normalized_email:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="email is required for Supabase Auth provisioning")
+            auth_admin = SupabaseAuthAdmin(resolved_settings.supabase_url, resolved_settings.supabase_service_role_key)
             try:
-                identity = SupabaseAuthAdmin(resolved_settings.supabase_url, resolved_settings.supabase_service_role_key).invite_user(payload.email)
+                existing_identity = auth_admin.find_user_by_email(normalized_email)
+                if existing_identity is not None:
+                    existing_id = existing_identity.get("id")
+                    if not isinstance(existing_id, str):
+                        raise SupabaseAdminError("Supabase Auth returned an invalid existing identity")
+                    if payload.method == "temporary_password":
+                        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A Supabase Auth identity already exists for this email; no password was changed")
+                    if identity_id is None:
+                        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A Supabase Auth identity already exists for this email; provide its existing Auth UUID")
+                    if existing_id != identity_id:
+                        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email and Auth UUID refer to different identities")
+                    identity = existing_identity
+                else:
+                    if payload.method == "temporary_password":
+                        identity = auth_admin.create_user(normalized_email, payload.password or "")
+                    else:
+                        identity = auth_admin.invite_user(normalized_email)
+                    created_identity = True
             except SupabaseAdminError as exc:
-                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Supabase Auth provisioning failed") from exc
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
             invited_id = identity.get("id")
             if not isinstance(invited_id, str) or (identity_id is not None and invited_id != identity_id):
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Supabase identity did not match the requested profile")
@@ -703,17 +982,34 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Supabase Auth provisioning is not configured")
         if not identity_id:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A verified identity id is required")
-        with request.app.state.database.session_factory() as session:
-            target = session.get(User, identity_id)
-            if target is not None:
-                if target.role != payload.role:
-                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User profile already exists with a different role")
-                return {"id": target.id, "role": target.role, "department": target.department, "created_at": target.created_at}
-            target = User(id=identity_id, role=payload.role, department=payload.department)
-            session.add(target)
-            session.commit()
-            session.refresh(target)
-            return {"id": target.id, "role": target.role, "department": target.department, "created_at": target.created_at}
+        try:
+            with request.app.state.database.session_factory() as session:
+                with session.begin():
+                    target = session.get(User, identity_id)
+                    if target is not None:
+                        if target.role != payload.role:
+                            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User profile already exists with a different role")
+                        result = {"id": target.id, "role": target.role, "department": target.department, "created_at": target.created_at, "must_change_password": target.must_change_password}
+                    else:
+                        target = User(id=identity_id, role=payload.role, department=normalized_department, must_change_password=must_change_password,
+                                      password_change_requested_at=datetime.now(timezone.utc) if must_change_password else None)
+                        session.add(target)
+                        session.flush()
+                        result = {"id": target.id, "role": target.role, "department": target.department, "created_at": target.created_at, "must_change_password": target.must_change_password}
+                return result
+        except SQLAlchemyError as exc:
+            logger.error("auth_profile_persistence_failed identity=%s", identity_id[:8] + "..." )
+            if local_identity_created:
+                local_identity_registry.pop(identity_id, None)
+            if created_identity:
+                if local_identity_created:
+                    logger.error("local_identity_compensation_failed identity=%s", identity_id[:8] + "...")
+                else:
+                    try:
+                        auth_admin.delete_user(identity_id)
+                    except SupabaseAdminError:
+                        logger.error("auth_profile_compensation_failed identity=%s", identity_id[:8] + "...")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Auth identity was verified but the application profile could not be saved; retry with the existing Auth UUID") from exc
 
     @api.patch("/api/admin/users/{user_id}/role", response_model=AdminUserResponse)
     def update_admin_user_role(
@@ -731,7 +1027,7 @@ def create_app(
             target.role = payload.role
             session.commit()
             session.refresh(target)
-            return {"id": target.id, "role": target.role, "department": target.department, "created_at": target.created_at}
+            return {"id": target.id, "role": target.role, "department": target.department, "created_at": target.created_at, "must_change_password": target.must_change_password}
 
     @api.get("/api/admin/cases", response_model=AdminCasesResponse)
     def admin_cases(
@@ -824,10 +1120,39 @@ def create_app(
         return {"access_token": auth_service.create_access_token(payload.subject), "token_type": "bearer"}
 
     @api.get("/api/auth/me", response_model=CurrentUserResponse)
-    def current_user(user: AuthenticatedUser = Depends(get_current_user)) -> dict[str, str]:
+    def current_user(user: AuthenticatedUser = Depends(get_current_user)) -> dict[str, Any]:
         if user.role not in {"student", "counselor", "admin"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role is invalid")
-        return {"id": user.id, "role": user.role}
+        return {"id": user.id, "role": user.role, "must_change_password": user.must_change_password}
+
+    @api.post("/api/auth/password-changed", response_model=CurrentUserResponse)
+    def confirm_password_changed(
+        request: Request,
+        user: AuthenticatedUser = Depends(get_current_user),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_factory() as session:
+            profile = session.get(User, user.id)
+            if profile is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application profile was not found")
+            if not profile.must_change_password:
+                return {"id": profile.id, "role": profile.role, "must_change_password": False}
+            if not resolved_settings.supabase_url or not resolved_settings.supabase_service_role_key or not profile.password_change_requested_at:
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Password change verification is not configured")
+            try:
+                identity = SupabaseAuthAdmin(resolved_settings.supabase_url, resolved_settings.supabase_service_role_key).get_user(user.id)
+                updated_at = identity.get("updated_at")
+                updated_at_value = datetime.fromisoformat(updated_at.replace("Z", "+00:00")) if isinstance(updated_at, str) else None
+            except (SupabaseAdminError, ValueError, AttributeError) as exc:
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Password change could not be verified") from exc
+            requested_at = profile.password_change_requested_at
+            if requested_at.tzinfo is None:
+                requested_at = requested_at.replace(tzinfo=timezone.utc)
+            if updated_at_value is None or updated_at_value <= requested_at:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Set a new password before continuing")
+            profile.must_change_password = False
+            profile.password_change_requested_at = None
+            session.commit()
+            return {"id": profile.id, "role": profile.role, "must_change_password": False}
 
     @api.post("/api/auth/profile", response_model=CurrentUserResponse, status_code=status.HTTP_201_CREATED)
     def synchronize_student_profile(
@@ -929,6 +1254,81 @@ def create_app(
                     }
                     for item in recent
                 ],
+            }
+
+    @api.get("/api/counselor/profile", response_model=CounselorProfileResponse)
+    def counselor_profile(
+        request: Request,
+        user: AuthenticatedUser = Depends(require_counselor),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_factory() as session:
+            profile = session.get(User, user.id)
+            if profile is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Counselor profile not found")
+            return {"id": profile.id, "role": profile.role, "department": profile.department, "created_at": profile.created_at}
+
+    @api.get("/api/counselor/students", response_model=list[CounselorStudentResponse])
+    def list_counselor_students(
+        request: Request,
+        user: AuthenticatedUser = Depends(require_counselor),
+    ) -> list[dict[str, Any]]:
+        with request.app.state.database.session_factory() as session:
+            students = list(
+                session.scalars(
+                    select(User)
+                    .join(SupportCase, SupportCase.student_id == User.id)
+                    .where(SupportCase.counselor_id == user.id, User.role == "student")
+                    .distinct()
+                    .order_by(User.created_at.desc())
+                )
+            )
+            result = []
+            for student in students:
+                latest_check_in = latest_check_in_for(session, student.id)
+                result.append({
+                    "id": student.id,
+                    "department": student.department,
+                    "created_at": student.created_at,
+                    "latest_check_in": check_in_to_dict(latest_check_in) if latest_check_in else None,
+                    "open_case_count": int(session.scalar(select(func.count(SupportCase.id)).where(
+                        SupportCase.student_id == student.id,
+                        SupportCase.counselor_id == user.id,
+                        SupportCase.status != "closed",
+                    )) or 0),
+                })
+            return result
+
+    @api.get("/api/counselor/students/{student_id}", response_model=CounselorStudentDetailResponse)
+    def get_counselor_student(
+        student_id: str,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_counselor),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_factory() as session:
+            student = session.scalar(select(User).where(User.id == student_id, User.role == "student"))
+            if student is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+            assigned_case_exists = session.scalar(select(SupportCase.id).where(
+                SupportCase.student_id == student_id, SupportCase.counselor_id == user.id
+            ))
+            if assigned_case_exists is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student is not assigned to this counselor")
+            check_ins = list(session.scalars(
+                select(CheckIn).where(CheckIn.user_id == student_id).order_by(CheckIn.created_at.desc()).limit(20)
+            ))
+            cases = list(session.scalars(
+                select(SupportCase).where(
+                    SupportCase.student_id == student_id, SupportCase.counselor_id == user.id
+                ).order_by(SupportCase.updated_at.desc())
+            ))
+            return {
+                "id": student.id,
+                "department": student.department,
+                "created_at": student.created_at,
+                "latest_check_in": check_in_to_dict(check_ins[0]) if check_ins else None,
+                "open_case_count": sum(1 for case in cases if case.status != "closed"),
+                "check_ins": [check_in_to_dict(item) for item in check_ins],
+                "cases": [support_case_to_dict(case, check_ins[0] if check_ins else None) for case in cases],
             }
 
     @api.get("/api/counselor/dashboard", response_model=CounselorDashboardResponse)
@@ -1117,7 +1517,7 @@ def create_app(
     @api.get("/api/counselor/messages", response_model=CounselorThreadsResponse)
     def list_counselor_messages(
         request: Request,
-        user: AuthenticatedUser = Depends(get_current_user),
+        user: AuthenticatedUser = Depends(require_active_user),
     ) -> dict[str, Any]:
         _assert_message_role(user)
         with request.app.state.database.session_factory() as session:
@@ -1134,7 +1534,7 @@ def create_app(
     def send_counselor_message(
         payload: CounselorMessageRequest,
         request: Request,
-        user: AuthenticatedUser = Depends(get_current_user),
+        user: AuthenticatedUser = Depends(require_active_user),
     ) -> dict[str, Any]:
         _assert_message_role(user)
         content = payload.content.strip()
@@ -1222,7 +1622,7 @@ def create_app(
     def mark_counselor_messages_read(
         conversation_id: str,
         request: Request,
-        user: AuthenticatedUser = Depends(get_current_user),
+        user: AuthenticatedUser = Depends(require_active_user),
     ) -> dict[str, Any]:
         _assert_message_role(user)
         with request.app.state.database.session_factory() as session:
@@ -1244,6 +1644,206 @@ def create_app(
             ).update({Message.read_at: now}, synchronize_session=False)
             session.commit()
             return {"conversation_id": conversation_id, "marked_read": int(marked or 0)}
+
+    # Anonymous support intentionally uses separate tables and serializers.
+    # No endpoint in this section returns student_user_id or counselor ids.
+    @api.post("/api/anonymous-support/conversations", response_model=AnonymousConversationSummary, status_code=status.HTTP_201_CREATED)
+    def create_anonymous_support_conversation(
+        payload: AnonymousConversationCreateRequest,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_student),
+    ) -> dict[str, Any]:
+        if not payload.consent:
+            raise HTTPException(status_code=422, detail="Explicit support consent is required")
+        now = datetime.now(timezone.utc)
+        with request.app.state.database.session_for_identity(user.id) as session:
+            conversation = AnonymousSupportConversation(
+                student_user_id=user.id,
+                anonymous_alias=_new_anonymous_alias(session),
+                category=payload.category,
+                urgency=payload.urgency,
+                consented_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(conversation)
+            session.commit()
+            session.refresh(conversation)
+            return _anonymous_summary(conversation)
+
+    @api.get("/api/anonymous-support/conversations", response_model=list[AnonymousConversationSummary])
+    def list_anonymous_support_conversations(
+        request: Request,
+        user: AuthenticatedUser = Depends(require_student),
+    ) -> list[dict[str, Any]]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            return [
+                _anonymous_summary(item)
+                for item in session.scalars(
+                    select(AnonymousSupportConversation)
+                    .where(AnonymousSupportConversation.student_user_id == user.id)
+                    .order_by(AnonymousSupportConversation.updated_at.desc())
+                )
+            ]
+
+    @api.get("/api/anonymous-support/conversations/{conversation_id}", response_model=AnonymousConversationResponse)
+    def get_anonymous_support_conversation(
+        conversation_id: str,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_student),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            return _anonymous_response(session, _anonymous_student_conversation(session, conversation_id, user.id))
+
+    @api.post("/api/anonymous-support/conversations/{conversation_id}/messages", response_model=AnonymousMessageResponse, status_code=status.HTTP_201_CREATED)
+    def send_anonymous_student_message(
+        conversation_id: str,
+        payload: AnonymousMessageRequest,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_student),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            conversation = _anonymous_student_conversation(session, conversation_id, user.id)
+            if conversation.status == "closed":
+                raise HTTPException(status_code=409, detail="This support conversation is closed")
+            position = session.scalar(select(func.max(AnonymousSupportMessage.position)).where(AnonymousSupportMessage.conversation_id == conversation.id)) or 0
+            message = AnonymousSupportMessage(conversation_id=conversation.id, position=int(position) + 1, sender_role="student", content=payload.content.strip())
+            conversation.status = "active" if conversation.assigned_counselor_id else conversation.status
+            conversation.updated_at = datetime.now(timezone.utc)
+            session.add(message)
+            session.commit()
+            session.refresh(message)
+            return _anonymous_message_dict(message)
+
+    @api.post("/api/anonymous-support/conversations/{conversation_id}/close", response_model=AnonymousConversationSummary)
+    def close_anonymous_support_conversation(
+        conversation_id: str,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_student),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            conversation = _anonymous_student_conversation(session, conversation_id, user.id)
+            conversation.status = "closed"
+            conversation.closed_at = datetime.now(timezone.utc)
+            conversation.updated_at = conversation.closed_at
+            session.commit()
+            session.refresh(conversation)
+            return _anonymous_summary(conversation)
+
+    @api.get("/api/counselor/anonymous-support", response_model=list[AnonymousConversationSummary])
+    def list_anonymous_counselor_inbox(
+        request: Request,
+        user: AuthenticatedUser = Depends(require_counselor),
+    ) -> list[dict[str, Any]]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            items = session.scalars(
+                select(AnonymousSupportConversation)
+                .where((AnonymousSupportConversation.assigned_counselor_id == user.id) | (AnonymousSupportConversation.assigned_counselor_id.is_(None)))
+                .where(AnonymousSupportConversation.status != "closed")
+                .order_by(AnonymousSupportConversation.created_at.asc())
+            )
+            return [_anonymous_summary(item) for item in items]
+
+    @api.post("/api/counselor/anonymous-support/{conversation_id}/accept", response_model=AnonymousConversationSummary)
+    def accept_anonymous_counselor_request(
+        conversation_id: str,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_counselor),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            conversation = session.scalar(
+                select(AnonymousSupportConversation)
+                .where(AnonymousSupportConversation.id == conversation_id)
+                .with_for_update()
+            )
+            if conversation is None or conversation.status == "closed":
+                raise HTTPException(status_code=404, detail="Anonymous support request not found")
+            if conversation.assigned_counselor_id not in (None, user.id):
+                raise HTTPException(status_code=403, detail="This request is assigned to another counselor")
+            conversation.assigned_counselor_id = user.id
+            conversation.status = "active"
+            conversation.updated_at = datetime.now(timezone.utc)
+            session.add(AnonymousSupportAuditEvent(conversation_id=conversation.id, actor_user_id=user.id, event_type="counselor_accepted"))
+            session.commit()
+            session.refresh(conversation)
+            return _anonymous_summary(conversation)
+
+    @api.get("/api/counselor/anonymous-support/{conversation_id}", response_model=AnonymousCounselorConversationResponse)
+    def get_anonymous_counselor_conversation(
+        conversation_id: str,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_counselor),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            return _anonymous_response(session, _anonymous_counselor_viewable_conversation(session, conversation_id, user.id), include_private=True)
+
+    @api.post("/api/counselor/anonymous-support/{conversation_id}/messages", response_model=AnonymousMessageResponse, status_code=status.HTTP_201_CREATED)
+    def send_anonymous_counselor_message(
+        conversation_id: str,
+        payload: AnonymousMessageRequest,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_counselor),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            conversation = _anonymous_counselor_conversation(session, conversation_id, user.id)
+            if conversation.status == "closed":
+                raise HTTPException(status_code=409, detail="This support conversation is closed")
+            position = session.scalar(select(func.max(AnonymousSupportMessage.position)).where(AnonymousSupportMessage.conversation_id == conversation.id)) or 0
+            message = AnonymousSupportMessage(conversation_id=conversation.id, position=int(position) + 1, sender_role="counselor", content=payload.content.strip())
+            conversation.updated_at = datetime.now(timezone.utc)
+            session.add(message)
+            session.commit()
+            session.refresh(message)
+            return _anonymous_message_dict(message)
+
+    @api.patch("/api/counselor/anonymous-support/{conversation_id}", response_model=AnonymousConversationSummary)
+    def update_anonymous_counselor_status(
+        conversation_id: str,
+        payload: AnonymousStatusRequest,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_counselor),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            conversation = _anonymous_counselor_conversation(session, conversation_id, user.id)
+            conversation.status = payload.status
+            conversation.closed_at = datetime.now(timezone.utc) if payload.status == "closed" else None
+            conversation.updated_at = datetime.now(timezone.utc)
+            session.add(AnonymousSupportAuditEvent(conversation_id=conversation.id, actor_user_id=user.id, event_type=f"status_{payload.status}"))
+            session.commit()
+            session.refresh(conversation)
+            return _anonymous_summary(conversation)
+
+    @api.post("/api/counselor/anonymous-support/{conversation_id}/notes", response_model=AnonymousNoteResponse, status_code=status.HTTP_201_CREATED)
+    def add_anonymous_counselor_note(
+        conversation_id: str,
+        payload: AnonymousNoteRequest,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_counselor),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            conversation = _anonymous_counselor_conversation(session, conversation_id, user.id)
+            note = AnonymousSupportNote(conversation_id=conversation.id, counselor_id=user.id, content=payload.content.strip())
+            session.add(note)
+            session.add(AnonymousSupportAuditEvent(conversation_id=conversation.id, actor_user_id=user.id, event_type="private_note_created"))
+            session.commit()
+            session.refresh(note)
+            return {"id": note.id, "content": note.content, "created_at": note.created_at, "updated_at": note.updated_at}
+
+    @api.post("/api/counselor/anonymous-support/{conversation_id}/followups", response_model=AnonymousFollowUpResponse, status_code=status.HTTP_201_CREATED)
+    def create_anonymous_followup(
+        conversation_id: str,
+        payload: AnonymousFollowUpRequest,
+        request: Request,
+        user: AuthenticatedUser = Depends(require_counselor),
+    ) -> dict[str, Any]:
+        with request.app.state.database.session_for_identity(user.id) as session:
+            conversation = _anonymous_counselor_conversation(session, conversation_id, user.id)
+            followup = AnonymousSupportFollowUp(conversation_id=conversation.id, counselor_id=user.id, title=payload.title.strip(), due_at=payload.due_at)
+            session.add(followup)
+            session.add(AnonymousSupportAuditEvent(conversation_id=conversation.id, actor_user_id=user.id, event_type="followup_created"))
+            session.commit()
+            session.refresh(followup)
+            return {"id": followup.id, "title": followup.title, "due_at": followup.due_at, "status": followup.status}
 
     @api.post("/api/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
     def create_conversation(

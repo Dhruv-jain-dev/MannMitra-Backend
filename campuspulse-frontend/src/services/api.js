@@ -22,6 +22,8 @@ export const apiConfig = {
   checkIns: "/api/wellbeing/check-ins",
   insights: "/api/wellbeing/insights",
   counselorDashboard: "/api/counselor/dashboard",
+  counselorProfile: "/api/counselor/profile",
+  counselorStudents: "/api/counselor/students",
   counselorCases: "/api/counselor/cases",
   counselorInterventions: "/api/counselor/interventions",
   counselorFollowups: "/api/counselor/followups",
@@ -30,5 +32,6 @@ export const apiConfig = {
   adminAnalytics: "/api/admin/analytics",
   counselorContacts: "/api/counselor/contacts",
   counselorMessages: "/api/counselor/messages",
-  counselorMessagesRead: "/api/counselor/messages"
+  counselorMessagesRead: "/api/counselor/messages",
+  anonymousSupport: "/api/anonymous-support/conversations"
 };

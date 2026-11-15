@@ -27,6 +27,7 @@ _ASYMMETRIC_ALGORITHMS = {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", 
 class AuthenticatedUser:
     id: str
     role: str | None = None
+    must_change_password: bool = False
 
 
 class AuthService:
@@ -131,7 +132,7 @@ def get_verified_subject(request: Request, credentials: HTTPAuthorizationCredent
 
 
 def get_current_user(request: Request, subject: AuthenticatedUser = Depends(get_verified_subject)) -> AuthenticatedUser:
-    with request.app.state.database.session_factory() as session:
+    with request.app.state.database.session_for_identity(subject.id) as session:
         user = session.get(User, subject.id)
         if user is None:
             if request.app.state.environment not in {"development", "dev", "test"}:
@@ -141,15 +142,23 @@ def get_current_user(request: Request, subject: AuthenticatedUser = Depends(get_
             session.commit()
         if user.role not in {"student", "counselor", "admin"}:
             raise HTTPException(status_code=403, detail="User role is invalid")
-        return AuthenticatedUser(id=user.id, role=user.role)
+        return AuthenticatedUser(id=user.id, role=user.role, must_change_password=user.must_change_password)
 
 
 def _require_role(required_role: str):
     def dependency(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
+        if user.must_change_password:
+            raise HTTPException(status_code=403, detail="Password change is required before accessing this resource")
         if user.role != required_role:
             raise HTTPException(status_code=403, detail=f"{required_role.capitalize()} role is required")
         return user
     return dependency
+
+
+def require_active_user(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="Password change is required before accessing this resource")
+    return user
 
 
 require_student = _require_role("student")

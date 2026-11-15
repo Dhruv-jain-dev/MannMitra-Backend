@@ -5,6 +5,7 @@ const ACCESS_TOKEN_KEY = "campuspulse_access_token";
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const LOCAL_TEST_AUTH = import.meta.env.VITE_LOCAL_TEST_AUTH === "true";
 
 export const supabase = SUPABASE_URL && SUPABASE_ANON_KEY
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } })
@@ -31,7 +32,7 @@ export function getStoredUser() {
 export function saveUser(user) { localStorage.setItem(KEY, JSON.stringify(user)); }
 
 export async function clearUser() {
-  if (supabase) await supabase.auth.signOut();
+  if (supabase && !LOCAL_TEST_AUTH) await supabase.auth.signOut();
   currentAccessToken = null;
   localStorage.removeItem(KEY);
   localStorage.removeItem(ACCESS_TOKEN_KEY);
@@ -42,6 +43,7 @@ export function getAccessToken() {
 }
 
 export async function restoreSession() {
+  if (LOCAL_TEST_AUTH) return getAccessToken() ? { access_token: getAccessToken() } : null;
   const client = requireSupabase();
   const { data, error } = await client.auth.getSession();
   if (error) throw error;
@@ -50,6 +52,15 @@ export async function restoreSession() {
 }
 
 export async function authenticateUser(email, password) {
+  if (LOCAL_TEST_AUTH) {
+    const response = await fetch(`${API_BASE_URL}/api/test-auth/sign-in`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Invalid local test credentials");
+    currentAccessToken = data.access_token;
+    localStorage.setItem(ACCESS_TOKEN_KEY, currentAccessToken);
+    saveUser({ id: data.user.id, role: data.user.role, email, accessToken: currentAccessToken });
+    return getStoredUser();
+  }
   const client = requireSupabase();
   const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error) throw error;
@@ -64,7 +75,19 @@ export async function getCurrentProfile() {
   const response = await fetch(`${API_BASE_URL}/api/auth/me`, { headers: { Authorization: `Bearer ${getAccessToken()}` } });
   if (!response.ok) throw new Error("The authenticated profile could not be loaded.");
   const profile = await response.json();
-  const stored = { ...getStoredUser(), id: profile.id, role: profile.role, accessToken: getAccessToken() };
+  const stored = { ...getStoredUser(), id: profile.id, role: profile.role, must_change_password: Boolean(profile.must_change_password), accessToken: getAccessToken() };
+  saveUser(stored);
+  return stored;
+}
+
+export async function updatePassword(password) {
+  const client = requireSupabase();
+  const { error } = await client.auth.updateUser({ password });
+  if (error) throw error;
+  const response = await fetch(`${API_BASE_URL}/api/auth/password-changed`, { method: "POST", headers: { Authorization: `Bearer ${getAccessToken()}` } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || "The password change could not be verified.");
+  const stored = { ...getStoredUser(), id: data.id, role: data.role, must_change_password: false, accessToken: getAccessToken() };
   saveUser(stored);
   return stored;
 }

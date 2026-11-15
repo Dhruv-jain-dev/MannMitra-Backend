@@ -99,6 +99,25 @@ class CounselorCaseApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
 
+    def test_assigned_students_and_profile_are_counselor_scoped(self) -> None:
+        created = self.client.post(
+            "/api/counselor/cases",
+            json={"student_id": "student-1", "summary": "Authorized student view"},
+            headers=self.headers_for("counselor-1"),
+        )
+        self.assertEqual(created.status_code, 201)
+        students = self.client.get("/api/counselor/students", headers=self.headers_for("counselor-1"))
+        self.assertEqual(students.status_code, 200)
+        self.assertEqual([item["id"] for item in students.json()], ["student-1"])
+        detail = self.client.get("/api/counselor/students/student-1", headers=self.headers_for("counselor-1"))
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["cases"][0]["student_id"], "student-1")
+        self.assertEqual(self.client.get("/api/counselor/students/student-1", headers=self.headers_for("counselor-2")).status_code, 404)
+        profile = self.client.get("/api/counselor/profile", headers=self.headers_for("counselor-1"))
+        self.assertEqual(profile.status_code, 200)
+        self.assertEqual(profile.json()["role"], "counselor")
+        self.assertEqual(self.client.get("/api/counselor/students", headers=self.headers_for("student-1")).status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()

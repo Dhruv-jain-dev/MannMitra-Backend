@@ -32,6 +32,8 @@ class User(Base):
     # default; role authorization will be enforced by the API layer later.
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="student", server_default="student")
     department: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    password_change_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
     conversations: Mapped[list["Conversation"]] = relationship(
@@ -272,6 +274,102 @@ class Message(Base):
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
     analysis: Mapped["MessageAnalysis | None"] = relationship(back_populates="message", uselist=False)
+
+
+class AnonymousSupportConversation(Base):
+    """Pseudonymous student/counselor support thread.
+
+    The student identity is kept only in ``student_user_id`` and is never
+    returned by the anonymous-support API serializers.
+    """
+
+    __tablename__ = "anonymous_support_conversations"
+    __table_args__ = (
+        CheckConstraint("category IN ('emotional_support', 'academic', 'safety', 'other')", name="ck_anon_support_category"),
+        CheckConstraint("urgency IN ('stable', 'moderate', 'urgent')", name="ck_anon_support_urgency"),
+        CheckConstraint("status IN ('pending', 'active', 'closed')", name="ck_anon_support_status"),
+        Index("ix_anon_support_student_status", "student_user_id", "status"),
+        Index("ix_anon_support_counselor_status", "assigned_counselor_id", "status"),
+        Index("ix_anon_support_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    student_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    assigned_counselor_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    anonymous_alias: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    urgency: Mapped[str] = mapped_column(String(16), nullable=False, default="moderate", server_default="moderate")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    messages: Mapped[list["AnonymousSupportMessage"]] = relationship(back_populates="conversation", cascade="all, delete-orphan")
+    notes: Mapped[list["AnonymousSupportNote"]] = relationship(back_populates="conversation", cascade="all, delete-orphan")
+    followups: Mapped[list["AnonymousSupportFollowUp"]] = relationship(back_populates="conversation", cascade="all, delete-orphan")
+
+
+class AnonymousSupportMessage(Base):
+    __tablename__ = "anonymous_support_messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "position", name="uq_anon_support_message_position"),
+        Index("ix_anon_support_messages_conversation", "conversation_id", "position"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("anonymous_support_conversations.id", ondelete="CASCADE"), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    sender_role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    conversation: Mapped[AnonymousSupportConversation] = relationship(back_populates="messages")
+
+
+class AnonymousSupportNote(Base):
+    __tablename__ = "anonymous_support_notes"
+    __table_args__ = (Index("ix_anon_support_notes_conversation", "conversation_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("anonymous_support_conversations.id", ondelete="CASCADE"), nullable=False)
+    counselor_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    content: Mapped[str] = mapped_column(String(4000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    conversation: Mapped[AnonymousSupportConversation] = relationship(back_populates="notes")
+
+
+class AnonymousSupportFollowUp(Base):
+    __tablename__ = "anonymous_support_followups"
+    __table_args__ = (
+        CheckConstraint("status IN ('scheduled', 'completed', 'cancelled')", name="ck_anon_support_followup_status"),
+        Index("ix_anon_support_followups_counselor_due", "counselor_id", "status", "due_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("anonymous_support_conversations.id", ondelete="CASCADE"), nullable=False)
+    counselor_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="scheduled", server_default="scheduled")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    conversation: Mapped[AnonymousSupportConversation] = relationship(back_populates="followups")
+
+
+class AnonymousSupportAuditEvent(Base):
+    __tablename__ = "anonymous_support_audit_events"
+    __table_args__ = (Index("ix_anon_support_audit_conversation_created", "conversation_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("anonymous_support_conversations.id", ondelete="CASCADE"), nullable=False)
+    actor_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 
 class MessageAnalysis(Base):

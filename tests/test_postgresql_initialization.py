@@ -17,12 +17,32 @@ from backend.models import Base
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = ROOT / "migrations_pg" / "versions" / "20261114_pg_00_initial.py"
+PASSWORD_MIGRATION_PATH = ROOT / "migrations_pg" / "versions" / "20261115_pg_01_password_change.py"
+ANONYMOUS_MIGRATION_PATH = ROOT / "migrations_pg" / "versions" / "20261115_pg_02_anonymous_support.py"
 
 
 def migration_module():
     spec = importlib.util.spec_from_file_location("pg_initial_test_module", MIGRATION_PATH)
     if spec is None or spec.loader is None:
         raise AssertionError("Could not load PostgreSQL initializer")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def password_migration_module():
+    spec = importlib.util.spec_from_file_location("pg_password_change_test_module", PASSWORD_MIGRATION_PATH)
+    if spec is None or spec.loader is None:
+        raise AssertionError("Could not load password-change migration")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def anonymous_migration_module():
+    spec = importlib.util.spec_from_file_location("pg_anonymous_support_test_module", ANONYMOUS_MIGRATION_PATH)
+    if spec is None or spec.loader is None:
+        raise AssertionError("Could not load anonymous-support migration")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -36,6 +56,8 @@ class PostgreSQLInitializationTests(unittest.TestCase):
             context = MigrationContext.configure(connection)
             with Operations.context(context):
                 migration_module().upgrade()
+                password_migration_module().upgrade()
+                anonymous_migration_module().upgrade()
 
     def tearDown(self) -> None:
         self.engine.dispose()
@@ -48,7 +70,7 @@ class PostgreSQLInitializationTests(unittest.TestCase):
     def test_complete_schema_contains_all_eight_tables(self) -> None:
         self.assertEqual(
             set(inspect(self.engine).get_table_names()),
-            {"users", "conversations", "messages", "message_analyses", "check_ins", "support_cases", "interventions", "followups"},
+            {"users", "conversations", "messages", "message_analyses", "check_ins", "support_cases", "interventions", "followups", "anonymous_support_conversations", "anonymous_support_messages", "anonymous_support_notes", "anonymous_support_followups", "anonymous_support_audit_events"},
         )
 
     def test_model_to_migration_column_parity(self) -> None:
@@ -65,9 +87,14 @@ class PostgreSQLInitializationTests(unittest.TestCase):
             ("interventions", "case_id", "support_cases", "CASCADE"), ("interventions", "counselor_id", "users", "CASCADE"),
             ("interventions", "student_id", "users", "CASCADE"), ("followups", "case_id", "support_cases", "CASCADE"),
             ("followups", "counselor_id", "users", "CASCADE"), ("followups", "student_id", "users", "CASCADE"),
+            ("anonymous_support_conversations", "student_user_id", "users", "CASCADE"), ("anonymous_support_conversations", "assigned_counselor_id", "users", "SET NULL"),
+            ("anonymous_support_messages", "conversation_id", "anonymous_support_conversations", "CASCADE"),
+            ("anonymous_support_notes", "conversation_id", "anonymous_support_conversations", "CASCADE"), ("anonymous_support_notes", "counselor_id", "users", "CASCADE"),
+            ("anonymous_support_followups", "conversation_id", "anonymous_support_conversations", "CASCADE"), ("anonymous_support_followups", "counselor_id", "users", "CASCADE"),
+            ("anonymous_support_audit_events", "conversation_id", "anonymous_support_conversations", "CASCADE"), ("anonymous_support_audit_events", "actor_user_id", "users", "CASCADE"),
         }
         actual = set()
-        for table_name in ("conversations", "check_ins", "support_cases", "interventions", "followups"):
+        for table_name in ("conversations", "check_ins", "support_cases", "interventions", "followups", "anonymous_support_conversations", "anonymous_support_messages", "anonymous_support_notes", "anonymous_support_followups", "anonymous_support_audit_events"):
             for foreign_key in inspector.get_foreign_keys(table_name):
                 actual.add((table_name, foreign_key["constrained_columns"][0], foreign_key["referred_table"], (foreign_key.get("options") or {}).get("ondelete")))
         self.assertTrue(expected.issubset(actual))
@@ -108,7 +135,7 @@ class PostgreSQLInitializationTests(unittest.TestCase):
 class PostgreSQLGraphTests(unittest.TestCase):
     def test_graph_has_one_head_and_excludes_adoption(self) -> None:
         scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic-pg.ini")))
-        self.assertEqual(scripts.get_heads(), ["20261114_pg_00_initial"])
+        self.assertEqual(scripts.get_heads(), ["20261115_pg_02_anonymous_support"])
         with self.assertRaises(CommandError):
             scripts.get_revision("20261112_06")
 

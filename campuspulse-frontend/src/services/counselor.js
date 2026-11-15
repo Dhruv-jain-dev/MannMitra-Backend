@@ -4,6 +4,10 @@ export function getCounselorDashboard() {
   return api.get(apiConfig.counselorDashboard);
 }
 
+export function getCounselorProfile() { return api.get(apiConfig.counselorProfile); }
+export function getCounselorStudents() { return api.get(apiConfig.counselorStudents); }
+export function getCounselorStudent(studentId) { return api.get(`${apiConfig.counselorStudents}/${studentId}`); }
+
 export function getCounselorCases() {
   return api.get(apiConfig.counselorCases);
 }
@@ -26,6 +30,14 @@ export function updateCounselorFollowup(id, payload) { return api.patch(`${apiCo
 export function getAdminDashboard() { return api.get(apiConfig.adminDashboard); }
 export function getAdminDepartments(params = {}) { return api.get(apiConfig.adminDepartments, { params }); }
 export function getAdminAnalytics(params = {}) { return api.get(apiConfig.adminAnalytics, { params }); }
+export function getAdminUsers(params = {}) { return api.get("/api/admin/users", { params }); }
+export function getAdminUser(userId) { return api.get(`/api/admin/users/${userId}`); }
+export function provisionAdminUser(payload) { return api.post("/api/admin/users/provision", payload); }
+export function updateAdminUserRole(userId, payload) { return api.patch(`/api/admin/users/${userId}/role`, payload); }
+export function getAdminCases(params = {}) { return api.get("/api/admin/cases", { params }); }
+export function assignAdminCase(caseId, payload) { return api.patch(`/api/admin/cases/${caseId}/assignment`, payload); }
+export function getAdminInterventions(params = {}) { return api.get("/api/admin/interventions", { params }); }
+export function getAdminFollowups(params = {}) { return api.get("/api/admin/followups", { params }); }
 
 export function getCounselorContacts() {
   return api.get(apiConfig.counselorContacts);
